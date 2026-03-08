@@ -1,0 +1,19 @@
+# --- Web backend ---
+fastapi>=0.115.0,<0.116.0
+uvicorn[standard]>=0.30.0,<0.31.0
+pydantic>=2.7.0,<3.0.0
+python-dotenv>=1.0.1
+requests>=2.31.0
+
+# --- ML + HF stack ---
+torch>=2.4.0
+transformers>=4.44.0,<5.0.0
+safetensors>=0.4.3
+sentencepiece>=0.2.0
+huggingface_hub>=0.22.0
+accelerate>=0.33.0
+Pillow>=10.0.0
+peft>=0.12.0
+
+# --- Sentence transformers ---
+sentence-transformers>=3.0.0
