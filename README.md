@@ -20,7 +20,29 @@ Its scoring layer is built on two public Hugging Face models: [`desklib/ai-text-
 | Git | For cloning |
 | CUDA GPU (optional) | Required only for the optional local rewrite model; detection models run on CPU, Apple Silicon MPS, or CUDA |
 
-### Clone and set up
+### One-liner install (macOS / Linux / WSL)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.sh | bash
+```
+
+This clones Trileaf to `~/.trileaf/`, registers the `trileaf` command in `~/.local/bin/`, and launches the interactive setup wizard. When complete, `trileaf` works from any terminal with no further activation steps.
+
+**Options** (environment variables, set before the pipe):
+```bash
+TRILEAF_DIR=~/tools/trileaf  curl -fsSL … | bash   # custom install path
+TRILEAF_NO_ONBOARD=1         curl -fsSL … | bash   # skip the wizard (CI / headless)
+```
+
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.ps1 | iex
+```
+
+### Manual install (clone-and-run)
+
+If you prefer to manage the clone location yourself:
 
 **macOS / Linux / WSL**
 
@@ -38,30 +60,17 @@ cd trileaf
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
-The setup script is the bootstrap step. It does four things:
-
-1. Detects your Python installation (3.10+)
-2. Creates an isolated virtual environment (`.venv/`)
-3. Installs all Python dependencies
-4. Registers the `trileaf` CLI inside that virtual environment
-
-After bootstrap, Trileaf launches the onboarding wizard unless you pass `--skip-onboarding`. Onboarding is the runtime-configuration step: it creates `~/.trileaf/config.json`, creates or updates `~/.trileaf/rewrite_profiles.json`, downloads the required local detection models, and optionally configures either an external rewrite provider or the local Qwen model.
-
-For most users, the only mandatory local assets are the two detection models. Trileaf can use an external rewrite API, so you do not need to download a local rewrite model unless you explicitly choose the offline Qwen option.
-
-Persistent configuration lives in JSON files under `~/.trileaf/`. `.env` files are no longer part of the normal setup flow; environment variables are only kept as manual override hooks for CI, Docker, or advanced debugging.
-
-### Start the dashboard
-
-Activate the virtual environment once per terminal session, then use the `trileaf` command:
+The manual setup script creates an isolated `.venv/` inside the cloned directory. After it completes, activate the venv before using the `trileaf` command:
 
 ```bash
-# macOS / Linux / WSL
-source .venv/bin/activate
+source .venv/bin/activate   # macOS / Linux / WSL — once per terminal session
+.venv\Scripts\Activate.ps1  # Windows
 trileaf run
+```
 
-# Windows
-.venv\Scripts\Activate.ps1
+### After install — start the dashboard
+
+```bash
 trileaf run
 ```
 
@@ -72,13 +81,14 @@ All Trileaf operations are available as subcommands:
 | Command | What it does |
 |---------|-------------|
 | `trileaf run` | Start the dashboard server |
-| `trileaf onboard` | Re-run model download and provider setup |
+| `trileaf setup` | Run the setup wizard (download models, configure provider) |
 | `trileaf config` | Add or edit rewrite provider profiles |
 | `trileaf doctor` | Environment and model health check |
+| `trileaf stop` | Stop a running server and release GPU memory |
 
 Run `trileaf <command> --help` for per-command options.
 
-### Setup script flags
+### Manual setup script flags
 
 | Flag | Effect |
 |------|--------|
@@ -91,7 +101,7 @@ Run `trileaf <command> --help` for per-command options.
 
 ## 2. Onboarding Overview
 
-The onboarding wizard (`trileaf onboard`) walks through four steps. Here is what is required, what is optional, and what hardware you need.
+The setup wizard (`trileaf setup`) walks through four steps. Here is what is required, what is optional, and what hardware you need.
 
 ### Step 1 — Python environment check
 
@@ -317,10 +327,11 @@ All thresholds and weights are adjustable via dashboard sliders at runtime or vi
 ## Project structure
 
 ```
-├── trileaf_cli.py                     # CLI entry point (trileaf run / onboard / config / doctor)
+├── trileaf_cli.py                     # CLI entry point (trileaf run / setup / config / doctor)
 ├── run.py                          # Server launcher (called by trileaf_cli)
 ├── pyproject.toml                  # Package metadata — registers the trileaf command
-├── setup.sh / setup.ps1           # Cross-platform setup scripts
+├── install.sh                      # One-liner installer (curl … | bash)
+├── setup.sh / setup.ps1           # Manual clone-and-run setup scripts
 ├── requirements.txt               # Python dependencies
 ├── api/
 │   ├── optimizer_api.py           # FastAPI app + WebSocket broadcast

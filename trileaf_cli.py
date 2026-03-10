@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  trileaf onboard            # first-time setup\n"
+            "  trileaf setup              # first-time setup (models + provider)\n"
             "  trileaf run                # start the dashboard\n"
             "  trileaf run --profile gpt  # use a specific provider profile\n"
             "  trileaf stop               # stop the server and release GPU memory\n"
@@ -161,9 +161,18 @@ def main(argv: list[str] | None = None) -> None:
         help="Enable uvicorn auto-reload (development mode)",
     )
 
-    # trileaf onboard
+    # trileaf setup  (canonical first-run command; alias for onboard)
+    p_setup = sub.add_parser(
+        "setup", help="First-time setup: download models and configure a provider"
+    )
+    p_setup.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Non-interactive mode: accept all defaults",
+    )
+
+    # trileaf onboard  (kept for backwards compatibility)
     p_onboard = sub.add_parser(
-        "onboard", help="First-time setup: download models and configure a provider"
+        "onboard", help="Alias for 'setup' (first-time setup)"
     )
     p_onboard.add_argument(
         "-y", "--yes", action="store_true",
@@ -188,6 +197,7 @@ def main(argv: list[str] | None = None) -> None:
     dispatch = {
         "run":     _cmd_run,
         "stop":    _cmd_stop,
+        "setup":   _cmd_onboard,
         "onboard": _cmd_onboard,
         "config":  _cmd_config,
         "doctor":  _cmd_doctor,
