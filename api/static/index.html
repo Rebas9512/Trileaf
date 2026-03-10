@@ -197,51 +197,39 @@
     }
     #input-text:focus { border-color: var(--accent2); }
 
-    /* Sliders */
-    .slider-block { display: flex; flex-direction: column; gap: 10px; }
-
-    .slider-row {
+    /* Mode toggle */
+    .mode-toggle-row {
       display: grid;
-      grid-template-columns: 120px 1fr 42px;
-      align-items: center;
-      gap: 10px;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
     }
-    .slider-row label { font-size: 12px; color: var(--text); }
-    .slider-row input[type=range] { accent-color: var(--accent2); cursor: pointer; }
-    .slider-val { font-size: 12px; font-weight: 700; color: var(--accent); text-align: right; }
-
-    /* Weight sum indicator */
-    .weight-sum-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 4px 0 2px;
+    .mode-btn {
+      padding: 7px 0;
+      background: var(--card);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .mode-btn.active {
+      background: var(--accent2);
+      color: #fff;
+      border-color: var(--accent2);
+    }
+    .mode-btn:hover:not(.active) { border-color: var(--accent); color: var(--text); }
+    .mode-hint {
       font-size: 11px;
       color: var(--muted);
-    }
-    .weight-sum-badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 9px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      font-size: 11px;
-      font-weight: 700;
-      transition: color .2s, border-color .2s, background .2s;
-    }
-    .weight-sum-badge.ok {
-      color: var(--green);
-      border-color: rgba(74,222,128,.35);
-      background: rgba(74,222,128,.07);
-    }
-    .weight-sum-badge.err {
-      color: var(--red);
-      border-color: rgba(248,113,113,.35);
-      background: rgba(248,113,113,.07);
+      margin-top: 6px;
+      line-height: 1.5;
     }
 
     /* Optimize button */
     #run-btn {
+      width: 100%;
       padding: 11px 0;
       background: var(--accent2);
       color: #fff;
@@ -250,7 +238,6 @@
       font-size: 14px;
       font-weight: 700;
       cursor: pointer;
-      width: 100%;
       letter-spacing: .3px;
       transition: background .18s;
     }
@@ -907,30 +894,20 @@
       <textarea id="input-text" placeholder="Paste the text you want to optimize here…"></textarea>
     </div>
 
-    <div>
-      <div class="section-label">Pareto Weights</div>
-      <div class="slider-block">
-        <div class="slider-row">
-          <label>AI Reduction</label>
-          <input type="range" id="w-ai-slider" min="0" max="0.95" step="0.05" value="0.60" />
-          <span class="slider-val" id="w-ai-val">0.60</span>
-        </div>
-        <div class="slider-row">
-          <label>Semantic</label>
-          <input type="range" id="w-sem-slider" min="0" max="0.95" step="0.05" value="0.35" />
-          <span class="slider-val" id="w-sem-val">0.35</span>
-        </div>
-        <div class="slider-row">
-          <label>Risk Penalty</label>
-          <input type="range" id="w-risk-slider" min="0" max="0.95" step="0.05" value="0.05" />
-          <span class="slider-val" id="w-risk-val">0.05</span>
-        </div>
-        <div class="weight-sum-row">
-          <span>Sum:</span>
-          <span class="weight-sum-badge ok" id="weight-sum-badge">1.00</span>
-          <span id="weight-sum-hint" style="font-size:10px;color:var(--muted)"></span>
-        </div>
+    <div id="left-extra-panel">
+      <div class="section-label">Text Mode</div>
+      <div class="mode-toggle-row">
+        <button id="mode-short-btn" class="mode-btn active">Short Text</button>
+        <button id="mode-long-btn" class="mode-btn">Long Text</button>
       </div>
+      <div class="mode-hint" id="mode-hint">Fine-grained · ~200-char chunks · best for texts up to ~3 000 chars</div>
+
+      <div class="section-label" style="margin-top:14px;">Run Mode</div>
+      <div class="mode-toggle-row">
+        <button id="run-single-btn" class="mode-btn active">Single Run</button>
+        <button id="run-double-btn" class="mode-btn">Double Run</button>
+      </div>
+      <div class="mode-hint" id="run-mode-hint">One standard optimization pass</div>
     </div>
 
     <button id="run-btn">Optimize</button>

@@ -28,7 +28,7 @@ import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, field_validator
 
 _log = logging.getLogger(__name__)
 
@@ -115,10 +115,8 @@ def _get_runtime_health_snapshot() -> Dict[str, str]:
 
 
 class OptimizeRequest(BaseModel):
-    text:   str
-    w_ai:   float = 0.60
-    w_sem:  float = 0.35
-    w_risk: float = 0.05
+    text:       str
+    chunk_mode: str = "short"   # "short" | "long"
 
     @field_validator("text")
     @classmethod
@@ -129,12 +127,12 @@ class OptimizeRequest(BaseModel):
             raise ValueError("text is too long (max 50 000 characters)")
         return v
 
-    @model_validator(mode="after")
-    def weights_sum_to_one(self) -> "OptimizeRequest":
-        total = round(self.w_ai + self.w_sem + self.w_risk, 6)
-        if abs(total - 1.0) > 0.01:
-            raise ValueError(f"weights must sum to 1.0 (got {total:.4f})")
-        return self
+    @field_validator("chunk_mode")
+    @classmethod
+    def validate_chunk_mode(cls, v: str) -> str:
+        if v not in ("short", "long"):
+            raise ValueError("chunk_mode must be 'short' or 'long'")
+        return v
 
 
 # ─── In-memory session state ───────────────────────────────────────────────────
@@ -366,13 +364,16 @@ async def api_optimize(req: OptimizeRequest):
     async def _run() -> None:
         global _session
         try:
+            from scripts.app_config import get_pipeline_config
+            pcfg = get_pipeline_config()
             result = await run_pipeline(
                 text=req.text,
                 broadcast=_broadcast,
                 run_id=run_id,
-                w_ai=req.w_ai,
-                w_sem=req.w_sem,
-                w_risk=req.w_risk,
+                w_ai=pcfg["w_ai"],
+                w_sem=pcfg["w_sem"],
+                w_risk=pcfg["w_risk"],
+                chunk_mode=req.chunk_mode,
             )
             _session.status = "done"
             _session.result = result

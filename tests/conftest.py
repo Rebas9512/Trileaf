@@ -50,6 +50,7 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(rc, "USER_CONFIG_DIR", config_dir)
     monkeypatch.setattr(rc, "CONFIG_PATH", config_file)
     monkeypatch.setattr(rc, "_LEGACY_CONFIG_PATH", legacy_file)
+    monkeypatch.setattr(rc, "_LEGACY_USER_CONFIG_PATH", tmp_path / "legacy_user_profiles.json")
 
     return {"dir": config_dir, "config": config_file, "legacy": legacy_file}
 

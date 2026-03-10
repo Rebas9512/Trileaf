@@ -26,15 +26,13 @@
   const $ = id => document.getElementById(id);
 
   const inputText          = $('input-text');
-  const wAiSlider          = $('w-ai-slider');
-  const wSemSlider         = $('w-sem-slider');
-  const wRiskSlider        = $('w-risk-slider');
-  const wAiVal             = $('w-ai-val');
-  const wSemVal            = $('w-sem-val');
-  const wRiskVal           = $('w-risk-val');
-  const weightSumBadge     = $('weight-sum-badge');
-  const weightSumHint      = $('weight-sum-hint');
   const runBtn             = $('run-btn');
+  const modeShortBtn       = $('mode-short-btn');
+  const modeLongBtn        = $('mode-long-btn');
+  const modeHint           = $('mode-hint');
+  const runSingleBtn       = $('run-single-btn');
+  const runDoubleBtn       = $('run-double-btn');
+  const runModeHint        = $('run-mode-hint');
   const chunkList          = $('chunk-list');
   const progressPH         = $('progress-placeholder');
   const runSummary         = $('run-summary');
@@ -62,6 +60,16 @@
   let liveUiTimer = null;
   let overallVisualPct = 0;
 
+  // Chunk mode: "short" | "long"
+  let chunkMode = 'short';
+
+  // Run mode: "single" | "double"
+  let runMode = 'single';
+
+  // Double-pass state — null when not in a two-pass run.
+  // { pass: 1|2, firstPassOriginalAiScore: number|null, chunkMode: string }
+  let _doublePassState = null;
+
   const CHUNK_PROGRESS = {
     boot: 4,
     rewriteStart: 10,
@@ -72,45 +80,10 @@
     paretoSpan: 7,
   };
 
-  /* ── Weight sliders — sum validation ──────────────────────────────────── */
-  const weightSliders = [wAiSlider, wSemSlider, wRiskSlider];
-  const weightRawVals = [wAiVal,    wSemVal,    wRiskVal   ];
-
-  function weightSum() {
-    return weightSliders.reduce((acc, s) => acc + parseFloat(s.value), 0);
-  }
-
-  function updateWeightDisplay() {
-    const raws = weightSliders.map(s => parseFloat(s.value));
-    raws.forEach((r, i) => { weightRawVals[i].textContent = r.toFixed(2); });
-
-    const total = raws.reduce((a, b) => a + b, 0);
-    const ok    = Math.abs(total - 1.0) < 0.005;
-    if (weightSumBadge) {
-      weightSumBadge.textContent = total.toFixed(2);
-      weightSumBadge.className   = `weight-sum-badge ${ok ? 'ok' : 'err'}`;
-    }
-    if (weightSumHint) {
-      weightSumHint.textContent = ok ? '' : `(需要 = 1.00，差 ${(total - 1.0).toFixed(2)})`;
-    }
-    // Disable run button if weights are wrong
-    runBtn.disabled = running || !ok;
-  }
-
-  weightSliders.forEach(s => s.addEventListener('input', updateWeightDisplay));
-  updateWeightDisplay();  // initialise display
-
-  function getWeights() {
-    return {
-      w_ai:   parseFloat(wAiSlider.value),
-      w_sem:  parseFloat(wSemSlider.value),
-      w_risk: parseFloat(wRiskSlider.value),
-    };
-  }
-
   function createOutputChunkEntry(chunkIdx) {
     return {
       chunk_idx:            chunkIdx,
+      para_idx:             chunkIdx,  // default: each chunk is its own para; overwritten by server
       original_text:        '',
       output_text:          '',
       reverted_to_original: false,
@@ -170,6 +143,38 @@
     syncOutputViewButtons();
     renderOutputView();
   });
+
+  /* ── Mode toggle ───────────────────────────────────────────────────────── */
+  const _modeHints = {
+    short: 'Fine-grained · ~200-char chunks · best for texts up to ~3 000 chars',
+    long:  'Paragraph-aware · ~400-char chunks · recommended for 2 000 – 8 000 chars',
+  };
+
+  function setChunkMode(mode) {
+    chunkMode = mode;
+    modeShortBtn.classList.toggle('active', mode === 'short');
+    modeLongBtn.classList.toggle('active',  mode === 'long');
+    if (modeHint) modeHint.textContent = _modeHints[mode];
+  }
+
+  if (modeShortBtn) modeShortBtn.addEventListener('click', () => setChunkMode('short'));
+  if (modeLongBtn)  modeLongBtn.addEventListener('click',  () => setChunkMode('long'));
+
+  /* ── Run mode toggle ───────────────────────────────────────────────────── */
+  const _runModeHints = {
+    single: 'One standard optimization pass',
+    double: 'Text passes through the pipeline twice · may lower AI score further · doubles processing time · greater risk of semantic drift',
+  };
+
+  function setRunMode(mode) {
+    runMode = mode;
+    if (runSingleBtn) runSingleBtn.classList.toggle('active', mode === 'single');
+    if (runDoubleBtn) runDoubleBtn.classList.toggle('active', mode === 'double');
+    if (runModeHint)  runModeHint.textContent = _runModeHints[mode];
+  }
+
+  if (runSingleBtn) runSingleBtn.addEventListener('click', () => setRunMode('single'));
+  if (runDoubleBtn) runDoubleBtn.addEventListener('click', () => setRunMode('double'));
 
   /* ── Fetch health info ─────────────────────────────────────────────────── */
   function fetchHealth() {
@@ -506,13 +511,21 @@
     if (ob) ob.style.width = (doneChunks / totalChunks * 100).toFixed(1) + '%';
 
     const existingOutputChunk = outputChunks.find(chunk => chunk.chunk_idx === data.chunk_idx);
+
+    // In pass 2 of a double run, show the raw-input chunk as "original" so the
+    // per-chunk comparison reflects raw-input → final-output, not pass1-output → pass2-output.
+    const _p1raw = _doublePassState?.pass === 2
+      ? (_doublePassState.pass1RawChunks?.[data.chunk_idx] ?? null)
+      : null;
+
     upsertOutputChunk(data.chunk_idx, {
-      original_text:        originalTexts[data.chunk_idx] || existingOutputChunk?.original_text || '',
+      para_idx:             data.para_idx ?? data.chunk_idx,
+      original_text:        _p1raw ? _p1raw.text : (originalTexts[data.chunk_idx] || existingOutputChunk?.original_text || ''),
       output_text:          data.final_text || '',
       reverted_to_original: !!data.reverted_to_original,
       best_gated:           data.best_candidate || existingOutputChunk?.best_gated || null,
       status_label:         data.status_label || (data.reverted_to_original ? 'Reverted to original' : 'Edited'),
-      original_ai_score:    data.original_ai_score || 0,
+      original_ai_score:    _p1raw ? _p1raw.original_ai_score : (data.original_ai_score || 0),
       final_ai_score:       data.final_ai_score || 0,
       final_sem_score:      data.final_sem_score || 0,
       selected_style:       data.selected_style || '',
@@ -535,13 +548,17 @@
     // Patch existing streamed chunks with best_candidate (text only available here)
     (data.chunks || []).forEach(chunk => {
       const existing = outputChunks.find(c => c.chunk_idx === chunk.chunk_idx);
+      const _p1raw = _doublePassState?.pass === 2
+        ? (_doublePassState.pass1RawChunks?.[chunk.chunk_idx] ?? null)
+        : null;
       upsertOutputChunk(chunk.chunk_idx, {
-        original_text:        chunk.original_text || existing?.original_text || '',
+        para_idx:             chunk.para_idx ?? chunk.chunk_idx,
+        original_text:        _p1raw ? _p1raw.text : (chunk.original_text || existing?.original_text || ''),
         output_text:          chunk.final_text || existing?.output_text || '',
         reverted_to_original: !!chunk.reverted_to_original,
         best_gated:           chunk.best_candidate || null,
         status_label:         chunk.status_label || (chunk.reverted_to_original ? 'Reverted to original' : 'Edited'),
-        original_ai_score:    chunk.original_ai_score || existing?.original_ai_score || 0,
+        original_ai_score:    _p1raw ? _p1raw.original_ai_score : (chunk.original_ai_score || existing?.original_ai_score || 0),
         final_ai_score:       chunk.final_ai_score || existing?.final_ai_score || 0,
         final_sem_score:      chunk.final_sem_score || existing?.final_sem_score || 0,
         selected_style:       chunk.selected_style || existing?.selected_style || '',
@@ -551,23 +568,60 @@
     });
     renderOutputView();
 
+    // ── Two-pass: after pass 1, fire pass 2 automatically ──────────────────
+    if (_doublePassState && _doublePassState.pass === 1) {
+      _doublePassState.firstPassOriginalAiScore = data.original_ai_score || 0;
+      // Snapshot per-chunk raw-input data BEFORE _prepareRunUI() clears outputChunks.
+      // Pass 2 will use these to show raw-input vs final-output in each chunk card.
+      _doublePassState.pass1RawChunks = {};
+      outputChunks.forEach(c => {
+        _doublePassState.pass1RawChunks[c.chunk_idx] = {
+          text:              c.original_text,
+          original_ai_score: c.original_ai_score,
+        };
+      });
+      _doublePassState.pass = 2;
+
+      const secondPassText = data.output;
+      _prepareRunUI();
+      if (runSummary) runSummary.textContent = 'Pass 2 / 2';
+
+      fetch('/api/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: secondPassText, chunk_mode: _doublePassState.chunkMode }),
+      }).then(r => r.json()).then(d => {
+        if (d.error) { alert(d.error); setRunning(false); _doublePassState = null; }
+      }).catch(e => {
+        alert('Pass 2 failed: ' + e.message);
+        setRunning(false);
+        _doublePassState = null;
+      });
+      return; // defer UI finalisation to pass-2 run_done
+    }
+
+    // ── Finalise UI (single pass, or pass 2 of double pass) ────────────────
     const revertedCount = (data.chunks || []).filter(c => c.reverted_to_original).length;
 
-    // AI score before → after with reduction delta
-    const origAi   = data.original_ai_score || 0;
-    const finalAi  = data.final_ai_score    || 0;
-    const delta    = (origAi - finalAi) * 100;   // positive = improvement
+    // For double-pass, compare against the very first original AI score
+    const origAi  = _doublePassState
+      ? _doublePassState.firstPassOriginalAiScore
+      : (data.original_ai_score || 0);
+    const finalAi = data.final_ai_score || 0;
+
+    const delta    = (origAi - finalAi) * 100;
     const deltaStr = delta >= 0
       ? `<span style="color:var(--green)">↓${delta.toFixed(1)}pp</span>`
       : `<span style="color:var(--red)">↑${Math.abs(delta).toFixed(1)}pp</span>`;
-    // labelHtml — passes raw HTML so numbers can be styled
-    // Use <span> (not <strong>) to avoid the .output-status strong CSS color override
+    const passLabel = _doublePassState
+      ? `<span style="color:var(--muted);font-size:10px"> (2-pass)</span>`
+      : '';
     const aiCompare = `<span style="color:var(--muted)">AI detection &nbsp;</span>`
       + `<span style="font-weight:700;color:#ffb0b0">${fmtPct(origAi)}</span>`
       + `<span style="color:var(--muted)"> before &nbsp;→&nbsp; </span>`
       + `<span style="font-weight:700;color:var(--green)">${fmtPct(finalAi)}</span>`
       + `<span style="color:var(--muted)"> after &nbsp;</span>`
-      + deltaStr;
+      + deltaStr + passLabel;
     const semStr = `Semantic similarity: ${fmtPct(data.final_sem_score)}`;
 
     if (revertedCount > 0) {
@@ -581,6 +635,8 @@
       setOutputStatus('done', aiCompare, semStr);
       runSummary.textContent = `Done — ${totalChunks} chunks`;
     }
+
+    _doublePassState = null;
     setRunning(false);
   }
 
@@ -595,33 +651,32 @@
     err.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
-  /* ── Run button ────────────────────────────────────────────────────────── */
+  /* ── Run button ─────────────────────────────────────────────────────────── */
   runBtn.addEventListener('click', async () => {
     const text = inputText.value.trim();
     if (!text) { inputText.focus(); return; }
 
-    // Hard check: weights must sum to 1.0
-    const total = weightSum();
-    if (Math.abs(total - 1.0) >= 0.005) {
-      alert(`权重必须相加得 1.00（当前合计 ${total.toFixed(2)}）\n请调整各权重滑块使总和等于 1.00`);
-      return;
+    if (runMode === 'double') {
+      _doublePassState = { pass: 1, firstPassOriginalAiScore: null, chunkMode };
+      _prepareRunUI();
+      if (runSummary) runSummary.textContent = 'Pass 1 / 2';
+    } else {
+      _doublePassState = null;
+      _prepareRunUI();
     }
-
-    // Reset UI state and immediately show chunk 0 placeholder — visible even
-    // before run_start arrives (e.g. if models_runtime is still warming up).
-    _prepareRunUI();
 
     try {
       const res = await fetch('/api/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, ...getWeights() }),
+        body: JSON.stringify({ text, chunk_mode: chunkMode }),
       });
       const data = await res.json();
-      if (data.error) { alert(data.error); setRunning(false); }
+      if (data.error) { alert(data.error); setRunning(false); _doublePassState = null; }
     } catch (e) {
       alert('Failed to start optimization: ' + e.message);
       setRunning(false);
+      _doublePassState = null;
     }
   });
 
@@ -1039,13 +1094,31 @@
   }
 
   function assembleOutputText() {
-    return outputChunks
-      .filter(chunk => chunk.is_complete)
-      .map(chunk => {
-        if (chunk.mode === 'original') return chunk.original_text;
-        if (chunk.reverted_to_original && chunk.best_gated) return chunk.best_gated.text;
-        return chunk.output_text;
-      })
+    const complete = outputChunks.filter(c => c.is_complete);
+    if (!complete.length) return '';
+
+    // Group by para_idx to restore original paragraph boundaries.
+    // Chunks from the same paragraph are joined with a space;
+    // different paragraphs are separated with a blank line.
+    const paraGroups = {};
+    complete.forEach(chunk => {
+      const pidx = chunk.para_idx ?? chunk.chunk_idx;
+      let text;
+      if (chunk.mode === 'original') {
+        text = chunk.original_text;
+      } else if (chunk.reverted_to_original && chunk.best_gated) {
+        text = chunk.best_gated.text;
+      } else {
+        text = chunk.output_text;
+      }
+      if (!paraGroups[pidx]) paraGroups[pidx] = [];
+      paraGroups[pidx].push(text);
+    });
+
+    return Object.keys(paraGroups)
+      .map(Number)
+      .sort((a, b) => a - b)
+      .map(pidx => paraGroups[pidx].join(' '))
       .join('\n\n')
       .trim();
   }
@@ -1059,8 +1132,7 @@
 
   function setRunning(val) {
     running = val;
-    const weightsOk = Math.abs(weightSum() - 1.0) < 0.005;
-    runBtn.disabled    = val || !weightsOk;
+    runBtn.disabled    = val;
     runBtn.textContent = val ? 'Optimizing…' : 'Optimize';
     const ob  = $('overall-bar');
     const opr = ob && ob.parentElement;

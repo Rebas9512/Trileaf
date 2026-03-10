@@ -371,6 +371,142 @@ def _should_remove_unix_link(link: Path, config_dir: Path, project_root: Path) -
     return _path_is_within(target, config_dir) or _path_is_within(target, project_root)
 
 
+def _cmd_weight(args: argparse.Namespace) -> None:
+    """Show or update Pareto utility weights."""
+    from scripts import app_config
+
+    config = app_config.load_config()
+    pipeline = config.setdefault("pipeline", {})
+
+    # Fill defaults for any missing weight keys
+    defaults = app_config._DEFAULTS["pipeline"]
+    for key in ("w_ai", "w_sem", "w_risk"):
+        pipeline.setdefault(key, defaults[key])
+
+    # No args → print current weights
+    if args.ai is None and args.sem is None and args.risk is None:
+        print(f"Current Pareto weights:")
+        print(f"  --ai   (AI reduction)  {pipeline['w_ai']:.2f}")
+        print(f"  --sem  (Semantic)      {pipeline['w_sem']:.2f}")
+        print(f"  --risk (Risk penalty)  {pipeline['w_risk']:.2f}")
+        print(f"  Sum: {pipeline['w_ai'] + pipeline['w_sem'] + pipeline['w_risk']:.2f}")
+        print(f"\nTo update: trileaf weight --ai 0.60 --sem 0.35 --risk 0.05")
+        raise SystemExit(0)
+
+    # Apply any provided values, keep existing for omitted ones
+    new_ai   = args.ai   if args.ai   is not None else pipeline["w_ai"]
+    new_sem  = args.sem  if args.sem  is not None else pipeline["w_sem"]
+    new_risk = args.risk if args.risk is not None else pipeline["w_risk"]
+
+    total = round(new_ai + new_sem + new_risk, 6)
+    if abs(total - 1.0) > 0.001:
+        print(f"Error: weights must sum to 1.0 (got {total:.4f}).")
+        print(f"  --ai {new_ai:.2f}  --sem {new_sem:.2f}  --risk {new_risk:.2f}")
+        raise SystemExit(1)
+
+    pipeline["w_ai"]   = new_ai
+    pipeline["w_sem"]  = new_sem
+    pipeline["w_risk"] = new_risk
+    config["pipeline"] = pipeline
+    app_config.save_config(config)
+
+    print(f"Weights updated:")
+    print(f"  AI reduction : {new_ai:.2f}")
+    print(f"  Semantic     : {new_sem:.2f}")
+    print(f"  Risk penalty : {new_risk:.2f}")
+
+
+def _find_venv_python(project_root: Path) -> str:
+    """Return the Python executable inside the project venv, falling back to sys.executable."""
+    for candidate in (
+        project_root / ".venv" / "bin" / "python",
+        project_root / ".venv" / "Scripts" / "python.exe",
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
+def _cmd_update(args: argparse.Namespace) -> None:
+    """Pull the latest changes from the git remote and refresh Python packages."""
+    import shutil
+
+    project_root = _project_root()
+
+    if not (project_root / ".git").exists():
+        print(f"Error: project directory is not a git repository.")
+        print(f"  {project_root}")
+        raise SystemExit(1)
+
+    git = shutil.which("git")
+    if not git:
+        print("Error: git is not available on PATH.")
+        raise SystemExit(1)
+
+    # Warn if server is still running
+    pid_file = Path.home() / ".trileaf" / "run.pid"
+    pid = _read_pid_file(pid_file)
+    if pid and _pid_exists(pid):
+        print(f"Warning: Trileaf server is running (PID {pid}).")
+        print("  Stop it before updating to avoid conflicts:")
+        print("    trileaf stop")
+        if not args.yes:
+            try:
+                answer = input("Continue anyway? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted.")
+                raise SystemExit(1)
+            if answer not in ("y", "yes"):
+                print("Aborted.")
+                raise SystemExit(0)
+
+    # Snapshot current commit
+    res = subprocess.run(
+        [git, "rev-parse", "--short", "HEAD"],
+        cwd=project_root, capture_output=True, text=True,
+    )
+    old_sha = res.stdout.strip() if res.returncode == 0 else "unknown"
+
+    print("Pulling latest changes…")
+    ret = subprocess.run([git, "pull"], cwd=project_root)
+    if ret.returncode != 0:
+        print("Error: git pull failed.")
+        raise SystemExit(ret.returncode)
+
+    res = subprocess.run(
+        [git, "rev-parse", "--short", "HEAD"],
+        cwd=project_root, capture_output=True, text=True,
+    )
+    new_sha = res.stdout.strip() if res.returncode == 0 else "unknown"
+
+    if old_sha == new_sha:
+        print("Already up to date.")
+        raise SystemExit(0)
+
+    # Refresh Python packages
+    python = _find_venv_python(project_root)
+    req = project_root / "requirements.txt"
+    print("Updating Python packages…")
+    if req.exists():
+        ret = subprocess.run(
+            [python, "-m", "pip", "install", "-r", str(req), "-q"],
+            cwd=project_root,
+        )
+    else:
+        ret = subprocess.run(
+            [python, "-m", "pip", "install", "-e", ".", "-q"],
+            cwd=project_root,
+        )
+    if ret.returncode != 0:
+        print("Error: package update failed — code was updated but dependencies may be incomplete.")
+        print("  Run manually:  pip install -r requirements.txt")
+        print(f"\nTrileaf code updated:  {old_sha} → {new_sha}  (packages incomplete)")
+        raise SystemExit(ret.returncode)
+
+    print(f"\nTrileaf updated:  {old_sha} → {new_sha}")
+    print("Restart the server to apply changes:  trileaf run")
+
+
 def _cmd_remove(args: argparse.Namespace) -> None:
     """Remove Trileaf and its generated files."""
     import shutil
@@ -583,6 +719,9 @@ def main(argv: list[str] | None = None) -> None:
             "  trileaf run --profile gpt  # use a specific provider profile\n"
             "  trileaf stop               # stop the server and release GPU memory\n"
             "  trileaf config             # manage provider profiles\n"
+            "  trileaf weight             # show current Pareto weights\n"
+            "  trileaf weight --ai 0.5 --sem 0.45 --risk 0.05  # update weights\n"
+            "  trileaf update             # pull latest version and refresh packages\n"
             "  trileaf doctor             # environment health check\n"
             "  trileaf remove             # uninstall Trileaf and all derived files\n"
         ),
@@ -628,6 +767,33 @@ def main(argv: list[str] | None = None) -> None:
     # trileaf doctor
     sub.add_parser("doctor", help="Check that all models and config are in place")
 
+    # trileaf weight
+    p_weight = sub.add_parser(
+        "weight", help="Show or update Pareto utility weights"
+    )
+    p_weight.add_argument(
+        "--ai", type=float, default=None, metavar="W",
+        help="Weight for AI-score reduction (e.g. 0.60)",
+    )
+    p_weight.add_argument(
+        "--sem", type=float, default=None, metavar="W",
+        help="Weight for semantic similarity (e.g. 0.35)",
+    )
+    p_weight.add_argument(
+        "--risk", type=float, default=None, metavar="W",
+        help="Weight for risk penalty (e.g. 0.05)",
+    )
+
+    # trileaf update
+    p_update = sub.add_parser(
+        "update",
+        help="Pull the latest version from git and refresh Python packages",
+    )
+    p_update.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the running-server warning prompt",
+    )
+
     # trileaf remove
     p_remove = sub.add_parser(
         "remove",
@@ -654,6 +820,8 @@ def main(argv: list[str] | None = None) -> None:
         "setup":   _cmd_onboard,
         "onboard": _cmd_onboard,
         "config":  _cmd_config,
+        "weight":  _cmd_weight,
+        "update":  _cmd_update,
         "doctor":  _cmd_doctor,
         "remove":  _cmd_remove,
     }

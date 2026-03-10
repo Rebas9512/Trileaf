@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import List
+from typing import List, Tuple
 
 def clean_text(text: str) -> str:
     """
@@ -73,7 +73,11 @@ _SENT_BOUNDARY = re.compile(
 )
 
 
-def split_text(text: str, max_chunk_chars: int = 200) -> List[str]:
+def split_text(
+    text: str,
+    max_chunk_chars: int = 200,
+    merge_short_paragraphs: bool = False,
+) -> List[str]:
     """
     Main entry point: split *text* into chunks suitable for the pipeline.
 
@@ -84,6 +88,9 @@ def split_text(text: str, max_chunk_chars: int = 200) -> List[str]:
     - If text has no clear paragraph structure, split by sentences grouping
       up to *max_chunk_chars* characters; prefer cuts at punctuation marks.
     - Text shorter than *max_chunk_chars* is returned as a single chunk.
+    - When *merge_short_paragraphs* is True (long-text mode), consecutive
+      short paragraphs are merged into a single chunk up to *max_chunk_chars*
+      so that chunk count stays in a 3-5 range for a ~2 000-char document.
     """
     text = text.strip()
     if not text:
@@ -93,6 +100,9 @@ def split_text(text: str, max_chunk_chars: int = 200) -> List[str]:
 
     if len(paragraphs) <= 1:
         return _sentence_group_split(text, max_chunk_chars)
+
+    if merge_short_paragraphs:
+        return _merge_paragraph_split(paragraphs, max_chunk_chars)
 
     result: List[str] = []
     for para in paragraphs:
@@ -133,7 +143,140 @@ def split_finer(text: str, level: int) -> List[str]:
     return sents
 
 
+def split_text_with_para_idx(
+    text: str,
+    max_chunk_chars: int = 200,
+    merge_short_paragraphs: bool = False,
+) -> Tuple[List[str], List[int]]:
+    """
+    Like split_text but also returns the original paragraph index for each chunk.
+
+    ``para_idx[i]`` is the 0-based index of the original paragraph from which
+    ``chunks[i]`` was derived.  Chunks that share the same ``para_idx`` came
+    from the same original paragraph and should be joined with a space (not a
+    blank line) when reconstructing the output.
+
+    Rules
+    -----
+    - Texts with no paragraph breaks: all chunks share ``para_idx = 0``.
+    - Short-text mode (merge_short_paragraphs=False): each paragraph generates
+      one or more chunks, all tagged with that paragraph's index.
+    - Long-text mode (merge_short_paragraphs=True): merged chunks are tagged
+      with the first original paragraph that entered the merge group.
+    """
+    text = text.strip()
+    if not text:
+        return [], []
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+    # No paragraph structure — all chunks belong to paragraph 0
+    if len(paragraphs) <= 1:
+        chunks = _sentence_group_split(text, max_chunk_chars)
+        return chunks, [0] * len(chunks)
+
+    if merge_short_paragraphs:
+        return _merge_paragraph_split_annotated(paragraphs, max_chunk_chars)
+
+    chunks: List[str] = []
+    para_indices: List[int] = []
+    for para_idx, para in enumerate(paragraphs):
+        if len(para) > max_chunk_chars:
+            sub = _sentence_group_split(para, max_chunk_chars)
+            chunks.extend(sub)
+            para_indices.extend([para_idx] * len(sub))
+        else:
+            chunks.append(para)
+            para_indices.append(para_idx)
+    return chunks, para_indices
+
+
 # ─── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _merge_paragraph_split_annotated(
+    paragraphs: List[str], max_chunk_chars: int
+) -> Tuple[List[str], List[int]]:
+    """
+    Like _merge_paragraph_split but also returns the para_idx for each chunk.
+
+    The para_idx of a merged chunk is the index of the first original paragraph
+    that entered that merge group.  Oversized paragraphs are sub-split at
+    sentence boundaries; their sub-chunks all receive the paragraph's own index.
+    """
+    result: List[str] = []
+    para_indices: List[int] = []
+    current_parts: List[str] = []
+    current_len = 0
+    current_start_para: int = 0
+
+    for para_idx, para in enumerate(paragraphs):
+        if len(para) > max_chunk_chars:
+            if current_parts:
+                result.append("\n\n".join(current_parts))
+                para_indices.append(current_start_para)
+                current_parts = []
+                current_len = 0
+            sub = _sentence_group_split(para, max_chunk_chars)
+            result.extend(sub)
+            para_indices.extend([para_idx] * len(sub))
+            current_start_para = para_idx + 1
+            continue
+
+        separator_overhead = 2 if current_parts else 0
+        if current_len + separator_overhead + len(para) > max_chunk_chars and current_parts:
+            result.append("\n\n".join(current_parts))
+            para_indices.append(current_start_para)
+            current_parts = [para]
+            current_len = len(para)
+            current_start_para = para_idx
+        else:
+            current_parts.append(para)
+            current_len += separator_overhead + len(para)
+
+    if current_parts:
+        result.append("\n\n".join(current_parts))
+        para_indices.append(current_start_para)
+
+    if not result:
+        return ["\n\n".join(paragraphs)], [0]
+    return result, para_indices
+
+
+def _merge_paragraph_split(paragraphs: List[str], max_chunk_chars: int) -> List[str]:
+    """
+    Group consecutive paragraphs into chunks up to *max_chunk_chars*.
+
+    Paragraphs that are individually oversized are sub-split at sentence
+    boundaries before being added to the result.
+    """
+    result: List[str] = []
+    current_parts: List[str] = []
+    current_len = 0
+
+    for para in paragraphs:
+        if len(para) > max_chunk_chars:
+            # Flush the current accumulation first
+            if current_parts:
+                result.append("\n\n".join(current_parts))
+                current_parts = []
+                current_len = 0
+            result.extend(_sentence_group_split(para, max_chunk_chars))
+            continue
+
+        separator_overhead = 2 if current_parts else 0  # "\n\n" joiner
+        if current_len + separator_overhead + len(para) > max_chunk_chars and current_parts:
+            result.append("\n\n".join(current_parts))
+            current_parts = [para]
+            current_len = len(para)
+        else:
+            current_parts.append(para)
+            current_len += separator_overhead + len(para)
+
+    if current_parts:
+        result.append("\n\n".join(current_parts))
+
+    return result or ["\n\n".join(paragraphs)]
 
 
 def _sentence_group_split(text: str, max_chars: int) -> List[str]:

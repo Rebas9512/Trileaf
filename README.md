@@ -6,7 +6,9 @@ Its scoring layer is built on two public Hugging Face models: [`desklib/ai-text-
 
 ## Preview
 
-![Trileaf dashboard preview](screenshot/Trileafscreenshot.png)
+![Trileaf dashboard — input and chunk view](screenshot/Trileafscreenshot1.png)
+
+![Trileaf dashboard — output and scoring view](screenshot/Trileafscreenshot2.png)
 
 ---
 
@@ -103,6 +105,8 @@ All Trileaf operations are available as subcommands:
 | `trileaf run` | Start the dashboard server |
 | `trileaf setup` | Run the setup wizard (download models, configure provider) |
 | `trileaf config` | Add or edit rewrite provider profiles |
+| `trileaf weight` | Show or update Pareto utility weights |
+| `trileaf update` | Pull the latest version from git and refresh packages |
 | `trileaf doctor` | Environment and model health check |
 | `trileaf stop` | Stop a running server and release GPU memory |
 | `trileaf remove` | Remove Trileaf, generated files, and installer PATH side effects |
@@ -241,9 +245,35 @@ Generating multiple candidates is only useful if selection is principled. The pi
    U = W_AI × ai_gain_z + W_SEM × sem_z − W_RISK × risk_penalty
    ```
 
-   Default weights: `W_AI = 0.60`, `W_SEM = 0.35`, `W_RISK = 0.05`. Adjustable via dashboard sliders at runtime or in `~/.trileaf/config.json` for persistent defaults.
+   Default weights: `W_AI = 0.60`, `W_SEM = 0.35`, `W_RISK = 0.05`. Adjustable via `trileaf weight` or directly in `~/.trileaf/config.json`.
 
 If no candidate passes the gate, the original chunk is kept unchanged — the optimizer never silently degrades quality.
+
+### Short text vs long text mode
+
+The dashboard toggle selects between two chunking strategies:
+
+| Mode | Chunk size | Paragraph strategy | Best for |
+|------|------------|-------------------|----------|
+| **Short text** | ~200 chars | Each paragraph is its own chunk; large paragraphs split at sentence boundaries | Texts up to ~3 000 chars; fine-grained control; tends to produce the largest AI-score reduction |
+| **Long text** | ~400 chars | Consecutive short paragraphs are merged until the target size is reached; large paragraphs are still sentence-split | Texts of ~2 000–8 000 chars; preserves rhetorical flow and style consistency across paragraphs |
+
+Both modes pass through the same Pareto-selection scoring pipeline. Short-text mode produces more chunks and therefore more individual scoring/rewriting calls, which increases total processing time but gives the model finer editorial control. Long-text mode reduces chunk count (a 2 000-char document splits into roughly 3–5 chunks) and keeps adjacent paragraphs together, which improves thematic coherence in the output.
+
+The 50 000-character API limit applies in both modes.
+
+### Two-pass optimization
+
+The **Run Mode** toggle on the dashboard selects between two execution strategies:
+
+| Mode | Description |
+|------|-------------|
+| **Single Run** | One standard optimization pass — default for most tasks |
+| **Double Run** | The text passes through the full pipeline twice; the first-pass output becomes the input for the second pass |
+
+In Double Run mode the original textarea text is never modified. The second pass uses an internal buffer so the source copy is always preserved. Final AI-score deltas are reported relative to the **original** input from Pass 1, so the summary accurately reflects the cumulative improvement across both passes.
+
+Double Run can lower the AI-detection score further than a single pass, but processing time roughly doubles and there is a higher risk of semantic drift from the original. It works best when a Single Run already achieves a meaningful score reduction and you want to push further.
 
 ### Bring your own model
 
@@ -279,7 +309,7 @@ Input text
 ┌─────────────────────────────────────────────────────┐
 │  Chunker                                            │
 │  clean_text() → split_text() → chunks               │
-│  (paragraph-aware, max ~200 chars per chunk)        │
+│  (paragraph-aware; ~200 chars short / ~400 chars long mode) │
 └───────────────────┬─────────────────────────────────┘
                     │  [chunk₀, chunk₁, … chunkₙ]
                     │
@@ -347,7 +377,12 @@ The dashboard receives a WebSocket event stream as the pipeline runs. Each chunk
 
 ### Key configuration parameters
 
-All thresholds and weights are adjustable via dashboard sliders at runtime or via `~/.trileaf/config.json` for persistent defaults:
+Thresholds and weights are stored in `~/.trileaf/config.json`. Utility weights can be updated at any time via the CLI:
+
+```bash
+trileaf weight                                        # show current weights
+trileaf weight --ai 0.60 --sem 0.35 --risk 0.05      # update (must sum to 1.0)
+```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -362,7 +397,7 @@ All thresholds and weights are adjustable via dashboard sliders at runtime or vi
 ## Project structure
 
 ```
-├── trileaf_cli.py                     # CLI entry point (trileaf run / setup / config / doctor)
+├── trileaf_cli.py                     # CLI entry point (trileaf run / setup / config / weight / update / doctor)
 ├── run.py                          # Server launcher (called by trileaf_cli)
 ├── pyproject.toml                  # Package metadata — registers the trileaf command
 ├── install.sh                      # One-liner installer (curl … | bash)

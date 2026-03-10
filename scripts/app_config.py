@@ -34,6 +34,7 @@ _DEFAULTS: Dict[str, Any] = {
     },
     "pipeline": {
         "max_chunk_chars": 200,
+        "max_chunk_chars_long": 400,
         "sem_gate": 0.65,
         "min_sent_sim_gate": 0.35,
         "len_ratio_min": 0.60,

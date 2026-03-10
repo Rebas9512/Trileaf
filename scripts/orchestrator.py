@@ -76,6 +76,7 @@ class ChunkResult:
     final_sem_score:    float
     reverted_to_original: bool
     status_label:       str = "Edited"
+    para_idx:           int = 0   # original paragraph this chunk was derived from
 
 
 @dataclass
@@ -190,22 +191,40 @@ def _apply_hard_gate(
 
 
 async def run_pipeline(
-    text:      str,
-    broadcast: Callable[[Dict[str, Any]], Any],
-    run_id:    str,
-    w_ai:      float = W_AI,
-    w_sem:     float = W_SEM,
-    w_risk:    float = W_RISK,
+    text:       str,
+    broadcast:  Callable[[Dict[str, Any]], Any],
+    run_id:     str,
+    w_ai:       float = W_AI,
+    w_sem:      float = W_SEM,
+    w_risk:     float = W_RISK,
+    chunk_mode: str   = "short",
 ) -> PipelineResult:
-    """Run the full writing-optimizer pipeline, streaming events via *broadcast*."""
+    """Run the full writing-optimizer pipeline, streaming events via *broadcast*.
+
+    *chunk_mode* controls the chunking strategy:
+      ``"short"`` — ~200-char chunks, fine-grained rewriting (default).
+      ``"long"``  — ~400-char chunks with paragraph merging, better style
+                    consistency for longer documents.
+    """
     from scripts import chunker
     from scripts import models_runtime as mr
 
     text = chunker.clean_text(text)
 
-    chunks: List[str] = await asyncio.to_thread(chunker.split_text, text, MAX_CHUNK_CHARS)
+    if chunk_mode == "long":
+        _pcfg = _app_config.get_pipeline_config()
+        _max_chars = int(_pcfg.get("max_chunk_chars_long", 400))
+        _merge = True
+    else:
+        _max_chars = MAX_CHUNK_CHARS
+        _merge = False
+
+    chunks, para_indices = await asyncio.to_thread(
+        chunker.split_text_with_para_idx, text, _max_chars, _merge
+    )
     if not chunks:
         chunks = [text]
+        para_indices = [0]
 
     await broadcast(
         {
@@ -213,16 +232,18 @@ async def run_pipeline(
             "data": {
                 "run_id":       run_id,
                 "total_chunks": len(chunks),
+                "chunk_mode":   chunk_mode,
                 "weights":      {"w_ai": w_ai, "w_sem": w_sem, "w_risk": w_risk},
             },
         }
     )
 
     chunk_results: List[ChunkResult] = []
-    for i, chunk in enumerate(chunks):
+    for i, (chunk, para_idx) in enumerate(zip(chunks, para_indices)):
         result = await _process_chunk(
             chunk=chunk,
             chunk_idx=i,
+            para_idx=para_idx,
             total_chunks=len(chunks),
             broadcast=broadcast,
             mr=mr,
@@ -233,7 +254,15 @@ async def run_pipeline(
         )
         chunk_results.append(result)
 
-    output_text = "\n\n".join(r.final_text for r in chunk_results)
+    # Reassemble output preserving original paragraph structure:
+    # chunks from the same paragraph are joined with a space;
+    # different paragraphs are separated with a blank line.
+    para_groups: Dict[int, List[str]] = {}
+    for r in chunk_results:
+        para_groups.setdefault(r.para_idx, []).append(r.final_text)
+    output_text = "\n\n".join(
+        " ".join(texts) for _, texts in sorted(para_groups.items())
+    )
 
     await broadcast({"type": "final_scoring", "data": {"message": "Computing final scores…"}})
 
@@ -258,6 +287,7 @@ async def run_pipeline(
             }
         chunk_payloads.append({
             "chunk_idx":            r.chunk_idx,
+            "para_idx":             r.para_idx,
             "original_text":        r.original,
             "final_text":           r.final_text,
             "reverted_to_original": r.reverted_to_original,
@@ -314,6 +344,7 @@ async def run_pipeline(
 async def _process_chunk(
     chunk:        str,
     chunk_idx:    int,
+    para_idx:     int,
     total_chunks: int,
     broadcast:    Callable,
     mr:           Any,
@@ -614,6 +645,7 @@ async def _process_chunk(
             "type": "chunk_done",
             "data": {
                 "chunk_idx":            chunk_idx,
+                "para_idx":             para_idx,
                 "final_text":           final_text,
                 "original_ai_score":    round(orig_ai, 4),
                 "final_ai_score":       round(final_ai_score, 4),
@@ -642,6 +674,7 @@ async def _process_chunk(
 
     return ChunkResult(
         chunk_idx=chunk_idx,
+        para_idx=para_idx,
         original=chunk,
         orig_ai_score=orig_ai,
         candidates=scored,
