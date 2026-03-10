@@ -1,6 +1,8 @@
 # Trileaf
 
-**Trileaf** is a local AI writing assistant that humanises LLM-generated text. It runs a multi-criteria Pareto-selection pipeline — generating ensemble rewrite candidates and scoring each one on AI-detection probability and semantic similarity — to find the revision that maximally reduces detectability while preserving the original meaning.
+**Trileaf** starts from a simple premise: a writing optimizer should not be locked to a single model. Instead of forcing you onto one built-in rewriter, it lets you bring the model you already trust and use that model to improve its own draft through a standardized local optimisation pipeline.
+
+It generates an ensemble of rewrite candidates, scores each one on AI-detection probability and semantic fidelity, and then uses Pareto-based selection to keep the strongest revision for every chunk. With optional double-pass optimisation, Trileaf can push the same text through the pipeline twice to make the final writing feel less uniform, more natural, and closer to human rhythm.
 
 Its scoring layer is built on two public Hugging Face models: [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) for AI-generated-text probability estimation, and [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) for chunk-level semantic similarity and sentence-alignment checks.
 
@@ -215,9 +217,9 @@ trileaf doctor
 
 ### Core idea
 
-Most AI-detection tools exploit statistical patterns that are characteristic of LLM output: overly uniform sentence length, predictable phrasing, lack of idiomatic variation, and low perplexity relative to a reference distribution. This optimizer attacks those patterns directly.
+Most AI-detection tools exploit statistical patterns that are characteristic of LLM output: overly uniform sentence length, predictable phrasing, lack of idiomatic variation, and low perplexity relative to a reference distribution. Trileaf attacks those patterns directly, but the key idea is broader: the optimizer is the pipeline, not the rewrite model.
 
-Rather than applying a single rewrite, it generates **three stylistically distinct candidates** per chunk — conservative, balanced, and aggressive — and uses a multi-criteria selection algorithm to choose the one that best trades off detectability reduction against semantic preservation.
+If your preferred model can already write, it can also refine its own writing more effectively when it is wrapped in a disciplined system: diverse rewrite prompts, standardized scoring, hard semantic gates, and deterministic candidate selection. Rather than trusting one rewrite attempt, Trileaf turns each chunk into a controlled competition and picks the version that best trades off detectability reduction against meaning preservation.
 
 ### The ensemble strategy
 
@@ -273,17 +275,19 @@ The **Run Mode** toggle on the dashboard selects between two execution strategie
 
 In Double Run mode the original textarea text is never modified. The second pass uses an internal buffer so the source copy is always preserved. Final AI-score deltas are reported relative to the **original** input from Pass 1, so the summary accurately reflects the cumulative improvement across both passes.
 
-Double Run can lower the AI-detection score further than a single pass, but processing time roughly doubles and there is a higher risk of semantic drift from the original. It works best when a Single Run already achieves a meaningful score reduction and you want to push further.
+This second pass is effectively a second optimisation layer: after the best first-pass candidates are selected, the pipeline can run again to smooth out remaining LLM regularities and add another layer of stylistic variation. It often produces writing that feels more organic than a single pass, although processing time roughly doubles and the risk of semantic drift rises as well.
 
 ### Bring your own model
 
-The rewrite backend is fully pluggable. Any OpenAI-compatible API endpoint works, including:
+Bring-your-own-model support is the core product idea, not a compatibility extra. The rewrite backend is fully pluggable, so you can use the model you already like and let it optimise its own prose inside the same standardized evaluation loop.
+
+Any OpenAI-compatible API endpoint works, including:
 
 - Cloud providers (OpenAI, Anthropic, Google Gemini, Groq, Mistral, xAI)
 - Self-hosted servers (Ollama, vLLM, LiteLLM)
 - Regional providers (MiniMax, Moonshot/Kimi, OpenRouter)
 
-Different models produce meaningfully different rewrite styles. A model with stronger instruction-following and natural language fluency will generally produce better candidates — the Pareto selection layer adapts regardless of which model backs it.
+Different models produce meaningfully different rewrite styles. A model with stronger instruction-following and natural language fluency will generally produce better candidates, while Trileaf's scoring-and-selection layer keeps the optimisation process consistent regardless of which model backs it.
 
 **Local development baseline:** Qwen3-VL-8B-Instruct running locally already produces strong results on most writing tasks, with effective AI-pattern avoidance and good factual preservation.
 
