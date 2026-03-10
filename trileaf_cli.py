@@ -159,6 +159,10 @@ def _path_is_within(path: Path, parent: Path) -> bool:
 def _read_pid_file(pid_file: Path) -> int | None:
     if not pid_file.exists():
         return None
+    try:
+        return int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
 
 
 def _load_install_metadata(config_dir: Path) -> dict[str, object] | None:
@@ -179,11 +183,10 @@ def _resolve_install_dir(config_dir: Path) -> Path | None:
     raw = payload.get("install_dir")
     if not isinstance(raw, str) or not raw.strip():
         return None
-    return Path(raw).expanduser().resolve()
     try:
-        return int(pid_file.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
+        return Path(raw).expanduser().resolve()
+    except OSError:
+        return Path(raw).expanduser()
 
 
 def _pid_exists(pid: int) -> bool:

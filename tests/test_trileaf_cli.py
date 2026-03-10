@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import trileaf_cli
@@ -53,7 +54,10 @@ def test_resolve_install_dir_from_metadata(tmp_path: Path) -> None:
     config_dir.mkdir()
     install_dir = tmp_path / "chosen-install"
     (config_dir / "install.json").write_text(
-        '{\n  "install_method": "one_liner",\n  "install_dir": "%s"\n}\n' % install_dir,
+        json.dumps(
+            {"install_method": "one_liner", "install_dir": str(install_dir)},
+            indent=2,
+        ) + "\n",
         encoding="utf-8",
     )
 
