@@ -1,0 +1,2 @@
+[console_scripts]
+trileaf = trileaf_cli:main

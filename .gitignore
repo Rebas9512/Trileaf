@@ -1,9 +1,19 @@
 __pycache__/
 *.py[cod]
 
+# Optional local env overrides for CI / Docker / debugging only.
+# Normal user configuration lives in ~/.trileaf/config.json and
+# ~/.trileaf/rewrite_profiles.json.
 .env
 .env.*
 .claude/
+.rewrite_profiles.local.json
+
+# Virtual environment
+.venv/
+
+# Reference / local-only directories (not for distribution)
+openclaw/
 
 .cache/
 models/**/.cache/

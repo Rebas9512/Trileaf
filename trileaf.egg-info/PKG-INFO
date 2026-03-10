@@ -1,0 +1,5 @@
+Metadata-Version: 2.1
+Name: trileaf
+Version: 0.1.0
+Summary: AI writing humaniser — Pareto-selection ensemble rewrite pipeline
+Requires-Python: >=3.10

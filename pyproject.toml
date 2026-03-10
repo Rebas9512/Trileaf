@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trileaf"
+version = "0.1.0"
+description = "AI writing humaniser — Pareto-selection ensemble rewrite pipeline"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0,<3.0.0",
+    "requests>=2.31.0",
+    "torch>=2.4.0",
+    "transformers>=4.52.0,<5.0.0",
+    "safetensors>=0.4.3",
+    "sentencepiece>=0.2.0",
+    "huggingface_hub>=0.22.0",
+    "accelerate>=0.33.0",
+    "Pillow>=10.0.0",
+    "sentence-transformers>=3.0.0",
+]
+
+[project.scripts]
+trileaf = "trileaf_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Rebas9512/Trileaf"
+Repository = "https://github.com/Rebas9512/Trileaf"
+Issues = "https://github.com/Rebas9512/Trileaf/issues"
+
+[tool.setuptools]
+py-modules = ["trileaf_cli", "run"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts*", "api*"]
+
+[tool.setuptools.package-data]
+api = ["static/*.html", "static/*.js", "static/*.css"]

@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LLM Writing Optimizer</title>
+  <title>Trileaf</title>
+  <link rel="icon" href="data:,">
   <style>
     /* ── Design tokens ────────────────────────────────────────────────────── */
     :root {
@@ -309,12 +310,37 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 10px 12px;
-      transition: border-color .3s;
+      transition: border-color .3s, box-shadow .3s, transform .3s;
+      position: relative;
+      overflow: hidden;
+      flex-shrink: 0;
     }
     .chunk-card.active-card { border-color: #484891; box-shadow: 0 0 0 1px rgba(99,102,241,.18) inset; }
     .chunk-card.done { border-color: #244424; }
     .chunk-card.warn { border-color: #3a3510; }
     .chunk-card.error-card { border-color: #442424; }
+    .chunk-card.processing-live {
+      box-shadow:
+        0 0 0 1px rgba(99,102,241,.16) inset,
+        0 10px 24px rgba(8, 10, 25, .22);
+    }
+    .chunk-card.inference-live {
+      border-color: rgba(129,140,248,.48);
+      transform: translateY(-1px);
+    }
+    .chunk-card.processing-live::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(110deg, transparent 0%, rgba(129,140,248,.08) 45%, transparent 100%);
+      transform: translateX(-120%);
+      animation: card-sheen 2.8s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes card-sheen {
+      0%   { transform: translateX(-120%); }
+      100% { transform: translateX(140%); }
+    }
 
     .chunk-head {
       display: flex;
@@ -322,16 +348,10 @@
       align-items: center;
       margin-bottom: 5px;
     }
-    .chunk-title { font-size: 12px; font-weight: 700; color: var(--accent); }
+    .chunk-title  { font-size: 12px; font-weight: 700; color: var(--accent); }
     .chunk-status { font-size: 11px; color: var(--muted); }
-
-    .chunk-preview {
-      font-size: 11px;
-      color: var(--muted);
-      margin-bottom: 8px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    .chunk-status.live {
+      color: #dbe0ff;
     }
 
     .chunk-meta {
@@ -355,6 +375,10 @@
       font-size: 11px;
       font-weight: 600;
     }
+    .phase-badge.live {
+      border-color: rgba(129,140,248,.36);
+      box-shadow: 0 0 0 1px rgba(129,140,248,.12) inset;
+    }
 
     .phase-badge.warn {
       background: rgba(251,191,36,.08);
@@ -371,6 +395,9 @@
       color: var(--muted);
       text-align: right;
     }
+    .phase-detail.live {
+      color: #cbd1ff;
+    }
 
     .placeholder {
       color: var(--muted); font-size: 12px; text-align: center;
@@ -380,15 +407,23 @@
 
     /* ── Overall progress bar ─────────────────────────────────────────────── */
     .overall-progress {
-      height: 3px;
+      height: 5px;
       background: var(--border);
       flex-shrink: 0;
+      overflow: hidden;
+      position: relative;
     }
     .overall-bar {
       height: 100%;
       background: linear-gradient(90deg, var(--accent2), var(--green));
       width: 0%;
-      transition: width .5s ease;
+      transition: width .22s linear, opacity .22s linear;
+      box-shadow: 0 0 6px rgba(99,102,241,.12);
+    }
+    .overall-bar.running {
+      background: linear-gradient(90deg, rgba(99,102,241,.82), rgba(74,222,128,.82));
+      box-shadow: 0 0 8px rgba(99,102,241,.14);
+      min-width: 6px;
     }
 
     /* ── Pipeline stepper ─────────────────────────────────────────────────── */
@@ -477,8 +512,23 @@
       margin-top: 7px;
       min-width: 10px;
       transition: background .35s;
+      position: relative;
+      overflow: hidden;
+      --progress: 0%;
+    }
+    .step-conn::before {
+      content: '';
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: var(--progress);
+      background: linear-gradient(90deg, var(--yellow) 0%, #c7d86a 60%, var(--green) 100%);
+      transition: width .22s linear;
     }
     .step-conn.done { background: var(--green); }
+    .step-conn.done::before {
+      width: 100%;
+      background: var(--green);
+    }
 
     .chunk-log {
       margin-top: 10px;
@@ -661,6 +711,13 @@
         rgba(255,255,255,.02);
     }
 
+    .output-chunk.pending {
+      border-color: rgba(129,140,248,.26);
+      background:
+        linear-gradient(90deg, rgba(129,140,248,.08), rgba(129,140,248,0)),
+        rgba(255,255,255,.02);
+    }
+
     .output-chunk-head {
       display: flex;
       align-items: center;
@@ -708,6 +765,12 @@
       background: rgba(74,222,128,.07);
     }
 
+    .output-chunk-tag.processing {
+      color: #c8cdff;
+      border-color: rgba(129,140,248,.3);
+      background: rgba(129,140,248,.09);
+    }
+
     .output-chunk-status {
       display: inline-flex;
       align-items: center;
@@ -730,6 +793,12 @@
       color: #92efb2;
       border-color: rgba(74,222,128,.25);
       background: rgba(74,222,128,.07);
+    }
+
+    .output-chunk-status.pending {
+      color: #c8cdff;
+      border-color: rgba(129,140,248,.25);
+      background: rgba(129,140,248,.08);
     }
 
     .output-toggle {
@@ -757,6 +826,11 @@
       color: var(--text);
       border-color: rgba(129,140,248,.4);
       background: rgba(129,140,248,.12);
+    }
+
+    .output-toggle button:disabled {
+      cursor: not-allowed;
+      opacity: .55;
     }
 
     .output-chunk-body {
@@ -816,7 +890,7 @@
 <body>
 
 <header>
-  <div class="logo">LLM Writing Optimizer <span>/ humanizer pipeline</span></div>
+  <div class="logo">Trileaf <span>/ humanizer pipeline</span></div>
   <div class="ws-status">
     <span class="ws-dot" id="ws-dot"></span>
     <span class="ws-label" id="ws-label">Disconnected</span>
@@ -863,7 +937,7 @@
 
     <div class="device-badge" id="device-badge">
       <span>Device:</span><strong id="device-label">—</strong>
-      &nbsp;·&nbsp;<span>Qwen:</span><strong id="qwen-label">—</strong>
+      &nbsp;·&nbsp;<span>Rewrite:</span><strong id="rewrite-label">—</strong>
     </div>
 
   </div>
@@ -908,6 +982,6 @@
 
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=0.1.0"></script>
 </body>
 </html>
