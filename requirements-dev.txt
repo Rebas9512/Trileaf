@@ -1,3 +1,5 @@
 # Development / CI dependencies — not required to run the optimizer itself.
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+wheel>=0.43.0
+setuptools>=61
