@@ -56,7 +56,19 @@ is_non_interactive() {
 # Expand "~" and strip a trailing slash for simple path comparisons.
 normalise_path() {
     local raw="${1:-}"
-    local expanded="${raw/#\~/$HOME}"
+    local expanded="$raw"
+    while [[ "$expanded" == \'*\' || "$expanded" == \"*\" ]]; do
+        if [[ "$expanded" == \'*\' && "$expanded" == *\' ]]; then
+            expanded="${expanded:1:${#expanded}-2}"
+            continue
+        fi
+        if [[ "$expanded" == \"*\" && "$expanded" == *\" ]]; then
+            expanded="${expanded:1:${#expanded}-2}"
+            continue
+        fi
+        break
+    done
+    expanded="${expanded/#\~/$HOME}"
     if [[ -n "$expanded" && "$expanded" != /* ]]; then
         expanded="$(pwd -P)/$expanded"
     fi
