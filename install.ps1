@@ -23,6 +23,7 @@ $ErrorActionPreference = "Stop"
 $ConfigDir = Join-Path $env:USERPROFILE ".trileaf"
 $InstallMetaPath = Join-Path $ConfigDir "install.json"
 $DefaultInstallDir = Join-Path $env:USERPROFILE "trileaf"
+$InstallDirRedirectedFrom = $null
 
 # ANSI colours — supported in Windows Terminal and PowerShell 7+
 $GREEN  = "`e[38;2;0;229;180m"
@@ -37,6 +38,11 @@ function Write-Info($msg)    { Microsoft.PowerShell.Utility\Write-Host "${MUTED}
 function Write-Warn($msg)    { Microsoft.PowerShell.Utility\Write-Host "${YELLOW}!${NC}  $msg" }
 function Write-Section($msg) { Microsoft.PowerShell.Utility\Write-Host ""; Microsoft.PowerShell.Utility\Write-Host "${BOLD}── $msg ──${NC}" }
 function Write-Fail($msg)    { Microsoft.PowerShell.Utility\Write-Host "${RED}x${NC}  $msg"; exit 1 }
+
+function Test-DirHasEntries([string]$Dir) {
+    if (-not (Test-Path $Dir -PathType Container)) { return $false }
+    return $null -ne (Get-ChildItem -Force -LiteralPath $Dir | Select-Object -First 1)
+}
 
 $SkipOnboard = $NoOnboard -or $env:TRILEAF_NO_ONBOARD -eq "1"
 
@@ -75,6 +81,25 @@ $resolvedConfigDir = [IO.Path]::GetFullPath($ConfigDir)
 if ($resolvedInstallDir.TrimEnd('\') -eq $resolvedConfigDir.TrimEnd('\')) {
     Write-Fail "Install directory cannot be $ConfigDir because that location is reserved for Trileaf JSON config files."
 }
+
+if ((Test-Path $resolvedInstallDir) -and -not (Test-Path $resolvedInstallDir -PathType Container)) {
+    Write-Fail "Install directory exists but is not a directory: $resolvedInstallDir"
+}
+
+if (-not (Test-Path (Join-Path $resolvedInstallDir ".git"))) {
+    if ((Test-Path $resolvedInstallDir -PathType Container) -and (Test-DirHasEntries $resolvedInstallDir)) {
+        $fallback = [IO.Path]::GetFullPath((Join-Path $resolvedInstallDir "trileaf"))
+        if ((Test-Path $fallback) -and -not (Test-Path $fallback -PathType Container)) {
+            Write-Fail "Fallback install directory exists but is not a directory: $fallback"
+        }
+        if ((Test-Path $fallback -PathType Container) -and -not (Test-Path (Join-Path $fallback ".git")) -and (Test-DirHasEntries $fallback)) {
+            Write-Fail "Install directory $resolvedInstallDir already exists and is not empty. The fallback subdirectory $fallback also exists and is not empty."
+        }
+        $InstallDirRedirectedFrom = $resolvedInstallDir
+        $resolvedInstallDir = $fallback
+    }
+}
+
 $InstallDir = $resolvedInstallDir
 
 Microsoft.PowerShell.Utility\Write-Host ""
@@ -123,6 +148,10 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 
 # ── Clone / update ────────────────────────────────────────────────────────────
 Write-Section "Installing Trileaf"
+
+if ($InstallDirRedirectedFrom) {
+    Write-Info "Requested directory is not empty — using subdirectory: $InstallDir"
+}
 
 $RepoUrl = if ($env:TRILEAF_REPO_URL) {
     $env:TRILEAF_REPO_URL

@@ -20,6 +20,7 @@ REPO_URL="${TRILEAF_REPO_URL:-https://github.com/Rebas9512/Trileaf.git}"
 BIN_DIR="$HOME/.local/bin"
 ORIGINAL_PATH="${PATH:-}"
 PATH_PERSISTED=0
+INSTALL_DIR_REDIRECTED_FROM=""
 VENV_DIR=""
 VENV_PYTHON=""
 VENV_PIP=""
@@ -78,6 +79,15 @@ normalise_path() {
     printf '%s' "$expanded"
 }
 
+dir_has_entries() {
+    local dir="$1"
+    local entry
+    for entry in "$dir"/.[!.]* "$dir"/..?* "$dir"/*; do
+        [[ -e "$entry" ]] && return 0
+    done
+    return 1
+}
+
 # Prompt for the target clone directory when possible.
 select_install_dir() {
     local candidate default_dir
@@ -99,6 +109,31 @@ select_install_dir() {
 
     if [[ "$TRILEAF_DIR" == "$(normalise_path "$CONFIG_DIR")" ]]; then
         fail "Install directory cannot be $CONFIG_DIR because that location is reserved for Trileaf JSON config files."
+    fi
+}
+
+resolve_install_dir() {
+    local requested="$TRILEAF_DIR"
+    local fallback=""
+
+    if [[ -e "$requested" && ! -d "$requested" ]]; then
+        fail "Install directory exists but is not a directory: $requested"
+    fi
+
+    if [[ -d "$requested/.git" ]]; then
+        TRILEAF_DIR="$requested"
+    elif [[ -d "$requested" ]] && dir_has_entries "$requested"; then
+        fallback="$(normalise_path "$requested/trileaf")"
+        if [[ -e "$fallback" && ! -d "$fallback" ]]; then
+            fail "Fallback install directory exists but is not a directory: $fallback"
+        fi
+        if [[ -d "$fallback" && ! -d "$fallback/.git" ]] && dir_has_entries "$fallback"; then
+            fail "Install directory $requested already exists and is not empty. The fallback subdirectory $fallback also exists and is not empty."
+        fi
+        INSTALL_DIR_REDIRECTED_FROM="$requested"
+        TRILEAF_DIR="$fallback"
+    else
+        TRILEAF_DIR="$requested"
     fi
 
     VENV_DIR="$TRILEAF_DIR/.venv"
@@ -166,6 +201,7 @@ ensure_local_bin_on_path() {
 
 # Resolve the installation directory before we print the banner.
 select_install_dir
+resolve_install_dir
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
@@ -207,6 +243,9 @@ command -v git >/dev/null 2>&1 || fail "git is required but not found."
 
 # ── Step 3: Clone / update ────────────────────────────────────────────────────
 section "Installing Trileaf"
+if [[ -n "$INSTALL_DIR_REDIRECTED_FROM" ]]; then
+    info "Requested directory is not empty — using subdirectory: $TRILEAF_DIR"
+fi
 if [[ -d "$TRILEAF_DIR/.git" ]]; then
     info "Existing installation found — updating..."
     git -C "$TRILEAF_DIR" pull --ff-only --quiet

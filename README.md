@@ -31,6 +31,7 @@ The installer prompts for a clone target directory first. Press Enter to accept 
 One-liner layout:
 
 - Source checkout + `.venv/` live in the install directory you choose.
+- If the directory you choose already exists and is not empty, the installer falls back to a `trileaf/` subdirectory inside it.
 - User config lives in `~/.trileaf/`.
 - The public command is registered as `~/.local/bin/trileaf`.
 - CLI registration tries to append `~/.local/bin` to `~/.bash_profile`. If that write fails, installation still completes and the script prints the exact `export PATH=...` command to run manually.
@@ -54,6 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.cmd 
 On Windows, the one-liner follows the same layout:
 
 - Install directory prompt first (default: `%USERPROFILE%\trileaf`)
+- If the selected directory already exists and is not empty, the installer falls back to a `trileaf\` subdirectory inside it
 - Source checkout + `.venv\` inside that install directory
 - JSON config files in `%USERPROFILE%\.trileaf`
 - `trileaf.exe` exposed through the venv `Scripts\` directory on PATH
