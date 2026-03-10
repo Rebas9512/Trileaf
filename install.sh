@@ -5,22 +5,26 @@
 #  curl -fsSL https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.sh | bash
 #
 #  Environment variables:
-#    TRILEAF_DIR=<path>     Install directory  (default: ~/.trileaf)
+#    TRILEAF_DIR=<path>     Install directory  (default: ~/trileaf)
 #    TRILEAF_REPO_URL=<url> Clone URL          (default: GitHub repo)
 #    TRILEAF_NO_ONBOARD=1   Skip the interactive setup wizard
 #    NO_COLOR=1             Disable colour output
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-TRILEAF_DIR="${TRILEAF_DIR:-$HOME/.trileaf}"
+DEFAULT_INSTALL_DIR="$HOME/trileaf"
+CONFIG_DIR="$HOME/.trileaf"
+INSTALL_META_PATH="$CONFIG_DIR/install.json"
+TRILEAF_DIR="${TRILEAF_DIR:-}"
 REPO_URL="${TRILEAF_REPO_URL:-https://github.com/Rebas9512/Trileaf.git}"
 BIN_DIR="$HOME/.local/bin"
-VENV_DIR="$TRILEAF_DIR/.venv"
-VENV_PYTHON="$VENV_DIR/bin/python"
-VENV_PIP="$VENV_DIR/bin/pip"
-TRILEAF_BIN="$VENV_DIR/bin/trileaf"
-TRILEAF_LINK="$BIN_DIR/trileaf"
 ORIGINAL_PATH="${PATH:-}"
+PATH_PERSISTED=0
+VENV_DIR=""
+VENV_PYTHON=""
+VENV_PIP=""
+TRILEAF_BIN=""
+TRILEAF_LINK="$BIN_DIR/trileaf"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 if [[ -n "${NO_COLOR:-}" || "${TERM:-dumb}" == "dumb" ]]; then
@@ -42,11 +46,53 @@ section() { echo ""; echo -e "${BOLD}── $* ──${NC}"; }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-# Returns 0 when running non-interactively (piped curl | bash, CI, etc.)
+# Returns 0 when onboarding should stay non-interactive.
 is_non_interactive() {
     [[ "${TRILEAF_NO_ONBOARD:-0}" == "1" ]] && return 0
-    [[ ! -t 0 || ! -t 1 ]] && return 0
+    [[ ! -r /dev/tty || ! -w /dev/tty ]] && return 0
     return 1
+}
+
+# Expand "~" and strip a trailing slash for simple path comparisons.
+normalise_path() {
+    local raw="${1:-}"
+    local expanded="${raw/#\~/$HOME}"
+    if [[ -n "$expanded" && "$expanded" != /* ]]; then
+        expanded="$(pwd -P)/$expanded"
+    fi
+    while [[ "${expanded}" != "/" && "${expanded}" == */ ]]; do
+        expanded="${expanded%/}"
+    done
+    printf '%s' "$expanded"
+}
+
+# Prompt for the target clone directory when possible.
+select_install_dir() {
+    local candidate default_dir
+    default_dir="$(normalise_path "$DEFAULT_INSTALL_DIR")"
+
+    if [[ -n "$TRILEAF_DIR" ]]; then
+        TRILEAF_DIR="$(normalise_path "$TRILEAF_DIR")"
+    elif [[ -r /dev/tty && -w /dev/tty && -z "${CI:-}" ]]; then
+        printf 'Install directory [%s]: ' "$default_dir" > /dev/tty
+        if IFS= read -r candidate < /dev/tty; then
+            candidate="${candidate:-$default_dir}"
+        else
+            candidate="$default_dir"
+        fi
+        TRILEAF_DIR="$(normalise_path "$candidate")"
+    else
+        TRILEAF_DIR="$default_dir"
+    fi
+
+    if [[ "$TRILEAF_DIR" == "$(normalise_path "$CONFIG_DIR")" ]]; then
+        fail "Install directory cannot be $CONFIG_DIR because that location is reserved for Trileaf JSON config files."
+    fi
+
+    VENV_DIR="$TRILEAF_DIR/.venv"
+    VENV_PYTHON="$VENV_DIR/bin/python"
+    VENV_PIP="$VENV_DIR/bin/pip"
+    TRILEAF_BIN="$VENV_DIR/bin/trileaf"
 }
 
 # Returns 0 when <dir> appears in <path>
@@ -54,7 +100,26 @@ path_has_dir() {
     case ":${1}:" in *":${2%/}:"*) return 0 ;; *) return 1 ;; esac
 }
 
-# Ensures ~/.local/bin exists, is on PATH now, and is written to shell rc files
+# Write install metadata to ~/.trileaf/install.json so the CLI can find the
+# managed checkout later for upgrades and removal.
+write_install_metadata() {
+    mkdir -p "$CONFIG_DIR"
+    "$PYTHON" - "$INSTALL_META_PATH" "$TRILEAF_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = {
+    "install_method": "one_liner",
+    "install_dir": sys.argv[2],
+}
+path = Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+# Ensures ~/.local/bin exists and tries to register it via ~/.bash_profile.
 ensure_local_bin_on_path() {
     mkdir -p "$BIN_DIR"
     export PATH="$BIN_DIR:$PATH"
@@ -62,32 +127,39 @@ ensure_local_bin_on_path() {
 
     local marker='# Added by Trileaf installer'
     local line='export PATH="$HOME/.local/bin:$PATH"'
-    local have_persisted_path=0
-    local rc
+    local target="$HOME/.bash_profile"
 
-    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
-        [[ -f "$rc" ]] || continue
-        if grep -qF '.local/bin' "$rc" 2>/dev/null; then
-            have_persisted_path=1
-            continue
-        fi
-        printf '\n%s\n%s\n' "$marker" "$line" >> "$rc"
-        info "Added ~/.local/bin to PATH in $(basename "$rc")"
-        have_persisted_path=1
-    done
+    if [[ -f "$target" ]] && [[ -r "$target" ]] && grep -qF '.local/bin' "$target" 2>/dev/null; then
+        PATH_PERSISTED=1
+        return 0
+    fi
 
-    if [[ "$have_persisted_path" -eq 0 ]]; then
-        rc="$HOME/.profile"
-        touch "$rc"
-        printf '\n%s\n%s\n' "$marker" "$line" >> "$rc"
-        info "Added ~/.local/bin to PATH in $(basename "$rc")"
+    if [[ ! -f "$target" ]] && ! touch "$target" 2>/dev/null; then
+        warn "Could not create ~/.bash_profile for CLI registration."
+        return 0
+    fi
+
+    if [[ ! -w "$target" ]]; then
+        warn "Could not update ~/.bash_profile for CLI registration."
+        return 0
+    fi
+
+    if printf '\n%s\n%s\n' "$marker" "$line" >> "$target"; then
+        info "Added ~/.local/bin to PATH in $(basename "$target")"
+        PATH_PERSISTED=1
+    else
+        warn "Could not update ~/.bash_profile for CLI registration."
     fi
 }
+
+# Resolve the installation directory before we print the banner.
+select_install_dir
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}  Trileaf — Installer${NC}"
 echo -e "${MUTED}  Install path: $TRILEAF_DIR${NC}"
+echo -e "${MUTED}  Config path:  $CONFIG_DIR${NC}"
 echo ""
 
 # ── Step 1: OS ────────────────────────────────────────────────────────────────
@@ -133,6 +205,8 @@ else
     ok "Cloned."
 fi
 
+write_install_metadata
+
 # ── Step 4: Virtual environment ───────────────────────────────────────────────
 section "Virtual environment"
 if [[ ! -x "$VENV_PYTHON" ]]; then
@@ -168,8 +242,13 @@ ln -sf "$TRILEAF_BIN" "$TRILEAF_LINK"
 ok "Linked: $TRILEAF_LINK"
 
 if ! path_has_dir "$ORIGINAL_PATH" "$BIN_DIR"; then
-    warn "$BIN_DIR is not in your current shell's PATH."
-    warn "Open a new terminal, or run now:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    if [[ "$PATH_PERSISTED" -eq 1 ]]; then
+        warn "$BIN_DIR is not in your current shell's PATH."
+        warn "Open a new terminal, or run now:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    else
+        warn "~/.bash_profile could not be updated for CLI registration."
+        warn "Add it manually before using trileaf:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
 fi
 
 # ── Step 6: Onboarding ────────────────────────────────────────────────────────
@@ -178,18 +257,24 @@ if is_non_interactive; then
     info "Non-interactive session — skipping wizard."
     info "Run  trileaf setup  to configure models and providers."
 else
-    "$TRILEAF_BIN" setup
+    "$TRILEAF_BIN" setup < /dev/tty > /dev/tty
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}  Trileaf installed!${NC}"
 echo ""
-if path_has_dir "${PATH}" "$BIN_DIR"; then
+if path_has_dir "$ORIGINAL_PATH" "$BIN_DIR"; then
     echo -e "  ${GREEN}trileaf setup${NC}    # configure models and providers"
     echo -e "  ${GREEN}trileaf run${NC}      # start the dashboard"
-else
+elif [[ "$PATH_PERSISTED" -eq 1 ]]; then
     echo "  Open a new terminal, then:"
+    echo -e "    ${GREEN}trileaf setup${NC}    # configure models and providers"
+    echo -e "    ${GREEN}trileaf run${NC}      # start the dashboard"
+else
+    echo "  ~/.bash_profile CLI registration did not complete."
+    echo "  Add ~/.local/bin to PATH, then run:"
+    echo -e "    ${GREEN}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
     echo -e "    ${GREEN}trileaf setup${NC}    # configure models and providers"
     echo -e "    ${GREEN}trileaf run${NC}      # start the dashboard"
 fi

@@ -7,18 +7,22 @@
 #    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.ps1))) -NoOnboard
 #
 #  Parameters:
-#    -InstallDir <path>   Install directory  (default: $HOME\.trileaf)
+#    -InstallDir <path>   Install directory  (default: $HOME\trileaf)
 #    -NoOnboard           Skip the interactive setup wizard
 #  Environment variables:
+#    TRILEAF_DIR          Override the install directory
 #    TRILEAF_REPO_URL     Override the git clone URL
 #    TRILEAF_NO_ONBOARD=1 Skip the interactive setup wizard
 # ──────────────────────────────────────────────────────────────────────────────
 param(
-    [string]$InstallDir = "$env:USERPROFILE\.trileaf",
+    [string]$InstallDir = "",
     [switch]$NoOnboard
 )
 
 $ErrorActionPreference = "Stop"
+$ConfigDir = Join-Path $env:USERPROFILE ".trileaf"
+$InstallMetaPath = Join-Path $ConfigDir "install.json"
+$DefaultInstallDir = Join-Path $env:USERPROFILE "trileaf"
 
 # ANSI colours — supported in Windows Terminal and PowerShell 7+
 $GREEN  = "`e[38;2;0;229;180m"
@@ -34,12 +38,50 @@ function Write-Warn($msg)    { Microsoft.PowerShell.Utility\Write-Host "${YELLOW
 function Write-Section($msg) { Microsoft.PowerShell.Utility\Write-Host ""; Microsoft.PowerShell.Utility\Write-Host "${BOLD}── $msg ──${NC}" }
 function Write-Fail($msg)    { Microsoft.PowerShell.Utility\Write-Host "${RED}x${NC}  $msg"; exit 1 }
 
+$SkipOnboard = $NoOnboard -or $env:TRILEAF_NO_ONBOARD -eq "1"
+
+if (-not $InstallDir) {
+    if ($env:TRILEAF_DIR) {
+        $InstallDir = $env:TRILEAF_DIR
+    } else {
+        $canPrompt = $true
+        try {
+            $canPrompt = -not [Console]::IsInputRedirected
+        } catch {
+            $canPrompt = $true
+        }
+        if ($canPrompt) {
+            $raw = Read-Host "Install directory [$DefaultInstallDir]"
+            if ($raw) {
+                $InstallDir = $raw
+            } else {
+                $InstallDir = $DefaultInstallDir
+            }
+        } else {
+            $InstallDir = $DefaultInstallDir
+        }
+    }
+}
+
+$InstallDir = $InstallDir.Trim()
+if ($InstallDir.StartsWith('~\')) {
+    $InstallDir = Join-Path $env:USERPROFILE $InstallDir.Substring(2)
+} elseif ($InstallDir -eq "~") {
+    $InstallDir = $env:USERPROFILE
+}
+
+$resolvedInstallDir = [IO.Path]::GetFullPath($InstallDir)
+$resolvedConfigDir = [IO.Path]::GetFullPath($ConfigDir)
+if ($resolvedInstallDir.TrimEnd('\') -eq $resolvedConfigDir.TrimEnd('\')) {
+    Write-Fail "Install directory cannot be $ConfigDir because that location is reserved for Trileaf JSON config files."
+}
+$InstallDir = $resolvedInstallDir
+
 Microsoft.PowerShell.Utility\Write-Host ""
 Microsoft.PowerShell.Utility\Write-Host "${BOLD}  Trileaf — Installer${NC}"
 Microsoft.PowerShell.Utility\Write-Host "${MUTED}  Install path: $InstallDir${NC}"
+Microsoft.PowerShell.Utility\Write-Host "${MUTED}  Config path:  $ConfigDir${NC}"
 Microsoft.PowerShell.Utility\Write-Host ""
-
-$SkipOnboard = $NoOnboard -or $env:TRILEAF_NO_ONBOARD -eq "1"
 
 # ── Execution policy ──────────────────────────────────────────────────────────
 $policy = Get-ExecutionPolicy
@@ -97,6 +139,12 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
     git clone --depth=1 $RepoUrl $InstallDir --quiet
     Write-Ok "Cloned."
 }
+
+New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
+@{
+    install_method = "one_liner"
+    install_dir = $InstallDir
+} | ConvertTo-Json | Set-Content -Path $InstallMetaPath -Encoding UTF8
 
 # ── Virtual environment ───────────────────────────────────────────────────────
 Write-Section "Virtual environment"

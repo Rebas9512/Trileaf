@@ -17,6 +17,7 @@ Run  trileaf <command> --help  for per-command options.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import signal
@@ -33,7 +34,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 _RC_MARKER = "# Added by Trileaf installer"
-_RC_FILES = (".zshrc", ".bashrc", ".bash_profile", ".profile")
+_RC_FILES = (".zprofile", ".zshrc", ".bashrc", ".bash_profile", ".profile")
+_INSTALL_META_NAME = "install.json"
 _MANAGED_MODEL_DIR_NAMES = {
     "desklib-ai-text-detector-v1.01",
     "sentence-transformers-paraphrase-mpnet-base-v2",
@@ -157,6 +159,27 @@ def _path_is_within(path: Path, parent: Path) -> bool:
 def _read_pid_file(pid_file: Path) -> int | None:
     if not pid_file.exists():
         return None
+
+
+def _load_install_metadata(config_dir: Path) -> dict[str, object] | None:
+    meta_path = config_dir / _INSTALL_META_NAME
+    if not meta_path.exists():
+        return None
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _resolve_install_dir(config_dir: Path) -> Path | None:
+    payload = _load_install_metadata(config_dir)
+    if not payload:
+        return None
+    raw = payload.get("install_dir")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(raw).expanduser().resolve()
     try:
         return int(pid_file.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
@@ -189,7 +212,10 @@ def _find_installer_rcs(home: Path) -> list[Path]:
         rc = home / name
         if not rc.exists():
             continue
-        src = rc.read_text(encoding="utf-8", errors="ignore")
+        try:
+            src = rc.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
         if _RC_MARKER in src:
             dirty.append(rc)
     return dirty
@@ -351,9 +377,15 @@ def _cmd_remove(args: argparse.Namespace) -> None:
     config_dir = home / ".trileaf"
     legacy_config_dir = home / ".llm-writing-optimizer"
     pid_file = config_dir / "run.pid"
+    recorded_install_dir = _resolve_install_dir(config_dir)
 
     this_file = Path(__file__).resolve()
-    is_one_liner = config_dir in this_file.parents
+    legacy_one_liner = config_dir in this_file.parents
+    managed_one_liner = (
+        recorded_install_dir is not None
+        and recorded_install_dir == project_root.resolve()
+    )
+    is_one_liner = legacy_one_liner or managed_one_liner
 
     plan: list[tuple[str, object, str]] = []
     deleted_roots: list[Path] = []
@@ -386,7 +418,12 @@ def _cmd_remove(args: argparse.Namespace) -> None:
                 plan.append(("PATH registry entry", str(scripts_dir), "win_path"))
 
     if is_one_liner:
-        if config_dir.exists():
+        if managed_one_liner and recorded_install_dir and recorded_install_dir.exists():
+            plan.append(("install directory", recorded_install_dir, "self_delete"))
+            deleted_roots.append(recorded_install_dir)
+            if config_dir.exists():
+                plan.append(("config directory (~/.trileaf/)", config_dir, "rmtree"))
+        elif config_dir.exists():
             plan.append(("install + config directory", config_dir, "self_delete"))
             deleted_roots.append(config_dir)
     else:

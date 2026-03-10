@@ -26,7 +26,14 @@ Its scoring layer is built on two public Hugging Face models: [`desklib/ai-text-
 curl -fsSL https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.sh | bash
 ```
 
-This clones Trileaf to `~/.trileaf/`, registers the `trileaf` command in `~/.local/bin/`, and launches the interactive setup wizard. When complete, `trileaf` works from any terminal with no further activation steps.
+The installer prompts for a clone target directory first. Press Enter to accept the default: `~/trileaf`.
+
+One-liner layout:
+
+- Source checkout + `.venv/` live in the install directory you choose.
+- User config lives in `~/.trileaf/`.
+- The public command is registered as `~/.local/bin/trileaf`.
+- CLI registration tries to append `~/.local/bin` to `~/.bash_profile`. If that write fails, installation still completes and the script prints the exact `export PATH=...` command to run manually.
 
 **Options** (environment variables, set before the pipe):
 ```bash
@@ -43,6 +50,13 @@ irm https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.ps1 | iex
 ```cmd
 curl -fsSL https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
+
+On Windows, the one-liner follows the same layout:
+
+- Install directory prompt first (default: `%USERPROFILE%\trileaf`)
+- Source checkout + `.venv\` inside that install directory
+- JSON config files in `%USERPROFILE%\.trileaf`
+- `trileaf.exe` exposed through the venv `Scripts\` directory on PATH
 
 ### Manual install (clone-and-run)
 
@@ -108,7 +122,7 @@ Run `trileaf <command> --help` for per-command options.
 trileaf remove
 ```
 
-One-liner installs are removed completely: `~/.trileaf/`, the `trileaf` symlink / PATH entry, generated models, and config are cleaned up.
+One-liner installs are removed completely: the chosen install directory, `~/.trileaf/`, the `trileaf` symlink / PATH entry, generated models, and config are cleaned up.
 
 For a manual source checkout, `trileaf remove` deletes generated files (`.venv`, downloaded models, build artefacts, caches, user config). If you also want to delete the checkout itself:
 
