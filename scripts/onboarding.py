@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -544,7 +545,14 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 62)
     print("  Setup complete!  Start Trileaf with:")
     print()
-    print("    trileaf run")
+    if shutil.which("trileaf"):
+        print("    trileaf run")
+    else:
+        print("    source .venv/bin/activate   # activate the venv first")
+        print("    trileaf run")
+        print()
+        print("  Or directly without activating:")
+        print("    .venv/bin/trileaf run")
     print()
     print("  To reconfigure the rewrite provider at any time:")
     print("    trileaf config")
