@@ -40,6 +40,10 @@ TRILEAF_NO_ONBOARD=1         curl -fsSL … | bash   # skip the wizard (CI / hea
 irm https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.ps1 | iex
 ```
 
+```cmd
+curl -fsSL https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
 ### Manual install (clone-and-run)
 
 If you prefer to manage the clone location yourself:
@@ -85,6 +89,7 @@ All Trileaf operations are available as subcommands:
 | `trileaf config` | Add or edit rewrite provider profiles |
 | `trileaf doctor` | Environment and model health check |
 | `trileaf stop` | Stop a running server and release GPU memory |
+| `trileaf remove` | Remove Trileaf, generated files, and installer PATH side effects |
 
 Run `trileaf <command> --help` for per-command options.
 
@@ -96,6 +101,20 @@ Run `trileaf <command> --help` for per-command options.
 | `--skip-onboarding` | Skip model download / provider wizard |
 | `--headless` | Non-interactive CI mode (implies `--skip-onboarding`) |
 | `--doctor` | Run environment check only, then exit |
+
+### Uninstall / clean removal
+
+```bash
+trileaf remove
+```
+
+One-liner installs are removed completely: `~/.trileaf/`, the `trileaf` symlink / PATH entry, generated models, and config are cleaned up.
+
+For a manual source checkout, `trileaf remove` deletes generated files (`.venv`, downloaded models, build artefacts, caches, user config). If you also want to delete the checkout itself:
+
+```bash
+trileaf remove --purge-source
+```
 
 ---
 

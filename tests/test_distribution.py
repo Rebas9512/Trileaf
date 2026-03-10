@@ -112,6 +112,11 @@ def test_download_scripts_are_packaged_modules() -> None:
     assert (PROJECT_ROOT / "scripts" / "download_scripts" / "__init__.py").exists()
 
 
+def test_one_liner_installers_exist() -> None:
+    for rel_path in ("install.sh", "install.ps1", "install.cmd"):
+        assert (PROJECT_ROOT / rel_path).exists(), f"Missing installer: {rel_path}"
+
+
 def test_optimizer_api_uses_packaged_static_dir() -> None:
     src = (PROJECT_ROOT / "api" / "optimizer_api.py").read_text(encoding="utf-8")
     assert 'Path(__file__).resolve().parent / "static"' in src
@@ -121,6 +126,13 @@ def test_pyproject_includes_packaged_static_assets() -> None:
     src = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'build-backend = "setuptools.build_meta"' in src
     assert 'api = ["static/*.html", "static/*.js", "static/*.css"]' in src
+
+
+def test_readme_documents_one_liner_and_remove_flows() -> None:
+    src = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "install.cmd" in src
+    assert "trileaf remove" in src
+    assert "--purge-source" in src
 
 
 # ── Version consistency ───────────────────────────────────────────────────────

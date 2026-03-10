@@ -6,13 +6,14 @@
 #
 #  Environment variables:
 #    TRILEAF_DIR=<path>     Install directory  (default: ~/.trileaf)
+#    TRILEAF_REPO_URL=<url> Clone URL          (default: GitHub repo)
 #    TRILEAF_NO_ONBOARD=1   Skip the interactive setup wizard
 #    NO_COLOR=1             Disable colour output
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 TRILEAF_DIR="${TRILEAF_DIR:-$HOME/.trileaf}"
-REPO_URL="https://github.com/Rebas9512/Trileaf.git"
+REPO_URL="${TRILEAF_REPO_URL:-https://github.com/Rebas9512/Trileaf.git}"
 BIN_DIR="$HOME/.local/bin"
 VENV_DIR="$TRILEAF_DIR/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
@@ -59,13 +60,28 @@ ensure_local_bin_on_path() {
     export PATH="$BIN_DIR:$PATH"
     hash -r 2>/dev/null || true
 
+    local marker='# Added by Trileaf installer'
     local line='export PATH="$HOME/.local/bin:$PATH"'
-    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+    local have_persisted_path=0
+    local rc
+
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
         [[ -f "$rc" ]] || continue
-        grep -qF '.local/bin' "$rc" 2>/dev/null && continue
-        printf '\n# Added by Trileaf installer\n%s\n' "$line" >> "$rc"
+        if grep -qF '.local/bin' "$rc" 2>/dev/null; then
+            have_persisted_path=1
+            continue
+        fi
+        printf '\n%s\n%s\n' "$marker" "$line" >> "$rc"
         info "Added ~/.local/bin to PATH in $(basename "$rc")"
+        have_persisted_path=1
     done
+
+    if [[ "$have_persisted_path" -eq 0 ]]; then
+        rc="$HOME/.profile"
+        touch "$rc"
+        printf '\n%s\n%s\n' "$marker" "$line" >> "$rc"
+        info "Added ~/.local/bin to PATH in $(basename "$rc")"
+    fi
 }
 
 # ── Banner ────────────────────────────────────────────────────────────────────

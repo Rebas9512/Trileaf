@@ -208,7 +208,7 @@ echo -e "  Activate the venv once per terminal session, then use the ${GREEN}tri
 echo ""
 echo -e "    ${GREEN}source .venv/bin/activate${NC}"
 echo -e "    ${GREEN}trileaf run${NC}              # start the dashboard"
-echo -e "    ${GREEN}trileaf onboard${NC}          # re-run model/provider setup"
+echo -e "    ${GREEN}trileaf setup${NC}            # re-run model/provider setup"
 echo -e "    ${GREEN}trileaf config${NC}           # manage provider profiles"
 echo -e "    ${GREEN}trileaf doctor${NC}           # environment health check"
 echo ""

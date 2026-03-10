@@ -233,7 +233,7 @@ Write-Host "  Activate the venv once per terminal session, then use the trileaf 
 Write-Host ""
 Write-Host (c $G "    .venv\Scripts\Activate.ps1")
 Write-Host (c $G "    trileaf run              # start the dashboard")
-Write-Host (c $G "    trileaf onboard          # re-run model/provider setup")
+Write-Host (c $G "    trileaf setup            # re-run model/provider setup")
 Write-Host (c $G "    trileaf config           # manage provider profiles")
 Write-Host (c $G "    trileaf doctor           # environment health check")
 Write-Host ""
