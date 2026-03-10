@@ -113,8 +113,10 @@ def _migrate_legacy_store() -> None:
         if not legacy_path.exists():
             continue
         try:
+            raw = json.loads(legacy_path.read_text(encoding="utf-8"))
+            normalized = _normalize_store(raw)
             USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            CONFIG_PATH.write_bytes(legacy_path.read_bytes())
+            CONFIG_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
             try:
                 os.chmod(CONFIG_PATH, 0o600)
             except OSError:
