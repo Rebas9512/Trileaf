@@ -1,13 +1,12 @@
 """
-Profile store tests (scripts/rewrite_config.py).
+.env credential store tests (scripts/rewrite_config.py).
 
-All tests use the isolated_config fixture so they never touch
-~/.trileaf on the real system.
+All tests use the isolated_env_file fixture so they never touch
+PROJECT_ROOT/.env on the real filesystem.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import stat
 from pathlib import Path
@@ -17,191 +16,385 @@ import pytest
 import scripts.rewrite_config as rc
 
 
-# ── Default store ─────────────────────────────────────────────────────────────
+# ── _parse_env_line ───────────────────────────────────────────────────────────
 
-def test_default_store_structure(isolated_config) -> None:
-    store = rc.load_store()
-    assert store["version"] == rc.STORE_VERSION
-    assert store["active_profile"] == rc.DEFAULT_LOCAL_PROFILE
-    assert rc.DEFAULT_LOCAL_PROFILE in store["profiles"]
+def test_parse_simple_kv() -> None:
+    assert rc._parse_env_line("KEY=value") == ("KEY", "value")
 
 
-def test_default_local_profile(isolated_config) -> None:
-    store = rc.load_store()
-    profile = store["profiles"][rc.DEFAULT_LOCAL_PROFILE]
-    assert profile["backend"] == "local"
-    assert "model_path" in profile
+def test_parse_quoted_double() -> None:
+    assert rc._parse_env_line('KEY="hello world"') == ("KEY", "hello world")
 
 
-# ── Save / load round-trip ────────────────────────────────────────────────────
-
-def test_save_and_reload(isolated_config) -> None:
-    store = rc.load_store()
-    rc.upsert_profile(store, "test-profile", {
-        "backend": "external",
-        "base_url": "https://api.example.com/v1",
-        "model": "test-model",
-        "api_key": "sk-test",
-    })
-    rc.save_store(store)
-
-    reloaded = rc.load_store()
-    assert "test-profile" in reloaded["profiles"]
-    assert reloaded["profiles"]["test-profile"]["model"] == "test-model"
+def test_parse_quoted_single() -> None:
+    assert rc._parse_env_line("KEY='hello world'") == ("KEY", "hello world")
 
 
-def test_saved_file_permissions(isolated_config) -> None:
-    """Profile file must be chmod 600 on POSIX so secrets aren't world-readable."""
+def test_parse_comment_line() -> None:
+    assert rc._parse_env_line("# comment") is None
+
+
+def test_parse_empty_line() -> None:
+    assert rc._parse_env_line("  ") is None
+
+
+def test_parse_no_equals() -> None:
+    assert rc._parse_env_line("KEYONLY") is None
+
+
+def test_parse_empty_value() -> None:
+    assert rc._parse_env_line("KEY=") == ("KEY", "")
+
+
+def test_parse_strips_whitespace_key() -> None:
+    assert rc._parse_env_line("  KEY  =value") == ("KEY", "value")
+
+
+# ── load_dot_env ──────────────────────────────────────────────────────────────
+
+def test_load_dot_env_basic(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isolated_env_file.write_text("FOO=bar\nBAZ=qux\n", encoding="utf-8")
+    monkeypatch.delenv("FOO", raising=False)
+    monkeypatch.delenv("BAZ", raising=False)
+    loaded = rc.load_dot_env(isolated_env_file)
+    assert loaded == {"FOO": "bar", "BAZ": "qux"}
+    assert os.environ["FOO"] == "bar"
+    assert os.environ["BAZ"] == "qux"
+
+
+def test_load_dot_env_skips_comments(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isolated_env_file.write_text("# comment\nKEY=val\n", encoding="utf-8")
+    monkeypatch.delenv("KEY", raising=False)
+    loaded = rc.load_dot_env(isolated_env_file)
+    assert loaded == {"KEY": "val"}
+
+
+def test_load_dot_env_no_override(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isolated_env_file.write_text("FOO=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("FOO", "from_env")
+    rc.load_dot_env(isolated_env_file, override=False)
+    assert os.environ["FOO"] == "from_env"
+
+
+def test_load_dot_env_override(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    isolated_env_file.write_text("FOO=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("FOO", "from_env")
+    rc.load_dot_env(isolated_env_file, override=True)
+    assert os.environ["FOO"] == "from_file"
+
+
+def test_load_dot_env_missing_file(tmp_path: Path) -> None:
+    result = rc.load_dot_env(tmp_path / "nonexistent.env")
+    assert result == {}
+
+
+# ── write_dot_env ─────────────────────────────────────────────────────────────
+
+def test_write_dot_env_creates_file(isolated_env_file: Path) -> None:
+    rc.write_dot_env({"A": "1", "B": "2"}, path=isolated_env_file, merge=False)
+    assert isolated_env_file.exists()
+    content = isolated_env_file.read_text(encoding="utf-8")
+    assert "A=1" in content
+    assert "B=2" in content
+
+
+def test_write_dot_env_chmod_600(isolated_env_file: Path) -> None:
     if os.name == "nt":
-        pytest.skip("chmod 600 semantics are Windows-specific — skipping on non-POSIX")
-    store = rc.load_store()
-    rc.save_store(store)
-    mode = stat.S_IMODE(rc.CONFIG_PATH.stat().st_mode)
+        pytest.skip("chmod 600 not applicable on Windows")
+    rc.write_dot_env({"K": "v"}, path=isolated_env_file)
+    mode = stat.S_IMODE(isolated_env_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
 
 
-# ── Profile CRUD ──────────────────────────────────────────────────────────────
-
-def test_upsert_and_get_profile(isolated_config) -> None:
-    store = rc.load_store()
-    rc.upsert_profile(store, "my-profile", {"backend": "external", "model": "gpt-4o"})
-    profile = rc.get_profile(store, "my-profile")
-    assert profile is not None
-    assert profile["model"] == "gpt-4o"
-
-
-def test_set_active_profile(isolated_config) -> None:
-    store = rc.load_store()
-    rc.upsert_profile(store, "alt", {"backend": "external", "model": "m"})
-    rc.set_active_profile(store, "alt")
-    assert store["active_profile"] == "alt"
-
-
-def test_set_unknown_profile_raises(isolated_config) -> None:
-    store = rc.load_store()
-    with pytest.raises(KeyError):
-        rc.set_active_profile(store, "does-not-exist")
-
-
-def test_delete_profile(isolated_config) -> None:
-    store = rc.load_store()
-    rc.upsert_profile(store, "disposable", {"backend": "external"})
-    rc.delete_profile(store, "disposable")
-    assert rc.get_profile(store, "disposable") is None
-    # Active profile falls back to default after deletion
-    assert store["active_profile"] == rc.DEFAULT_LOCAL_PROFILE
-
-
-def test_delete_default_profile_raises(isolated_config) -> None:
-    store = rc.load_store()
-    with pytest.raises(ValueError):
-        rc.delete_profile(store, rc.DEFAULT_LOCAL_PROFILE)
-
-
-# ── Legacy migration ──────────────────────────────────────────────────────────
-
-def test_migrate_legacy_store(isolated_config) -> None:
-    """If old project-root store exists and new one doesn't, it should be migrated."""
-    legacy_path: Path = isolated_config["legacy"]
-    new_path: Path = isolated_config["config"]
-
-    # Write a fake legacy store
-    legacy_data = {
-        "version": 1,
-        "active_profile": rc.LEGACY_LOCAL_PROFILE,
-        "profiles": {
-            rc.LEGACY_LOCAL_PROFILE: rc._default_local_profile(),
-            "my-old-api": {"backend": "external", "model": "claude-3"},
-        },
-    }
-    legacy_path.write_text(json.dumps(legacy_data), encoding="utf-8")
-
-    assert not new_path.exists()
-    rc._migrate_legacy_store()
-
-    assert new_path.exists(), "New config should have been created by migration"
-    assert not legacy_path.exists(), "Legacy file should have been removed after migration"
-
-    migrated = json.loads(new_path.read_text(encoding="utf-8"))
-    assert "my-old-api" in migrated["profiles"]
-    assert rc.DEFAULT_LOCAL_PROFILE in migrated["profiles"]
-    assert rc.LEGACY_LOCAL_PROFILE not in migrated["profiles"]
-    assert migrated["active_profile"] == rc.DEFAULT_LOCAL_PROFILE
-
-
-def test_migration_skipped_when_new_exists(isolated_config) -> None:
-    """Migration must not overwrite an existing new-format store."""
-    legacy_path: Path = isolated_config["legacy"]
-    new_path: Path = isolated_config["config"]
-
-    legacy_path.write_text(
-        json.dumps({"version": 1, "active_profile": rc.LEGACY_LOCAL_PROFILE, "profiles": {}}),
-        encoding="utf-8",
+def test_write_dot_env_with_header(isolated_env_file: Path) -> None:
+    rc.write_dot_env(
+        {"KEY": "val"},
+        path=isolated_env_file,
+        header="Test header",
+        merge=False,
     )
-    new_path.write_text(
-        json.dumps({"version": 1, "active_profile": rc.DEFAULT_LOCAL_PROFILE, "profiles": {"sentinel": {}}}),
-        encoding="utf-8",
-    )
-
-    rc._migrate_legacy_store()
-
-    # New file should be untouched
-    data = json.loads(new_path.read_text(encoding="utf-8"))
-    assert "sentinel" in data["profiles"]
+    content = isolated_env_file.read_text(encoding="utf-8")
+    assert "# Test header" in content
+    assert "KEY=val" in content
 
 
-# ── API key resolution ────────────────────────────────────────────────────────
+def test_write_dot_env_merge_updates_key(isolated_env_file: Path) -> None:
+    isolated_env_file.write_text("KEY=old\nOTHER=keep\n", encoding="utf-8")
+    rc.write_dot_env({"KEY": "new"}, path=isolated_env_file, merge=True)
+    content = isolated_env_file.read_text(encoding="utf-8")
+    assert "KEY=new" in content
+    assert "OTHER=keep" in content
+    assert "KEY=old" not in content
 
-def test_api_key_from_profile(isolated_config) -> None:
-    profile = {"backend": "external", "api_key": "sk-from-profile"}
-    result = rc.resolve_api_key(profile, provider_id="openai")
-    assert result["value"] == "sk-from-profile"
-    assert result["source"] == "profile"
+
+def test_write_dot_env_merge_appends_new_key(isolated_env_file: Path) -> None:
+    isolated_env_file.write_text("EXISTING=yes\n", encoding="utf-8")
+    rc.write_dot_env({"NEWKEY": "newval"}, path=isolated_env_file, merge=True)
+    content = isolated_env_file.read_text(encoding="utf-8")
+    assert "EXISTING=yes" in content
+    assert "NEWKEY=newval" in content
 
 
-def test_api_key_from_env_fallback(isolated_config, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_dot_env_fresh_on_empty_merge(isolated_env_file: Path) -> None:
+    """merge=True on a nonexistent file should create fresh."""
+    assert not isolated_env_file.exists()
+    rc.write_dot_env({"X": "1"}, path=isolated_env_file, merge=True)
+    assert "X=1" in isolated_env_file.read_text(encoding="utf-8")
+
+
+# ── _read_dot_env_key ─────────────────────────────────────────────────────────
+
+def test_read_dot_env_key_found(isolated_env_file: Path) -> None:
+    isolated_env_file.write_text("A=1\nTARGET=found\nB=2\n", encoding="utf-8")
+    assert rc._read_dot_env_key(isolated_env_file, "TARGET") == "found"
+
+
+def test_read_dot_env_key_missing(isolated_env_file: Path) -> None:
+    isolated_env_file.write_text("A=1\n", encoding="utf-8")
+    assert rc._read_dot_env_key(isolated_env_file, "MISSING") is None
+
+
+def test_read_dot_env_key_no_file(tmp_path: Path) -> None:
+    assert rc._read_dot_env_key(tmp_path / "no.env", "KEY") is None
+
+
+# ── resolve_credentials ───────────────────────────────────────────────────────
+
+def test_resolve_credentials_from_env(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REWRITE_API_KEY already in process env → picked up directly."""
     monkeypatch.setenv("REWRITE_API_KEY", "sk-from-env")
-    profile = {"backend": "external"}  # no api_key in profile
-    result = rc.resolve_api_key(profile, provider_id="openai")
-    assert result["value"] == "sk-from-env"
-    assert "env:" in result["source"]
+    monkeypatch.setenv("REWRITE_BACKEND", "external")
+    result = rc.resolve_credentials()
+    assert result["credential_source"] in ("env", "dotenv")
+    assert os.environ["REWRITE_API_KEY"] == "sk-from-env"
 
 
-def test_api_key_provider_specific_fallback(isolated_config, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_credentials_from_dot_env(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Key in .env → loaded into os.environ."""
+    isolated_env_file.write_text(
+        "REWRITE_BACKEND=external\nREWRITE_API_KEY=sk-dotenv\n",
+        encoding="utf-8",
+    )
     monkeypatch.delenv("REWRITE_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-specific")
-    profile = {"backend": "external"}
-    result = rc.resolve_api_key(profile, provider_id="openai")
-    assert result["value"] == "sk-openai-specific"
+    monkeypatch.delenv("REWRITE_BACKEND", raising=False)
+    result = rc.resolve_credentials()
+    assert os.environ.get("REWRITE_API_KEY") == "sk-dotenv"
+    assert result["dot_env_loaded"] is True
 
 
-def test_unresolved_placeholder_rejected(isolated_config) -> None:
-    """A profile api_key that looks like ${MY_VAR} must not be treated as a real key."""
-    profile = {"backend": "external", "api_key": "${MY_API_KEY}"}
+def test_resolve_credentials_provider_fallback(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OPENAI_API_KEY used as fallback when REWRITE_API_KEY absent."""
+    monkeypatch.delenv("REWRITE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+    monkeypatch.setenv("REWRITE_PROVIDER_ID", "openai")
+    result = rc.resolve_credentials()
+    assert os.environ.get("REWRITE_API_KEY") == "sk-openai-fallback"
+    assert "env:OPENAI_API_KEY" in result["credential_source"]
+
+
+def test_resolve_credentials_no_key(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing set → credential_source = 'none'."""
+    monkeypatch.delenv("REWRITE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("REWRITE_PROVIDER_ID", raising=False)
+    result = rc.resolve_credentials()
+    assert result["credential_source"] == "none"
+
+
+def test_resolve_credentials_leafhub_takes_priority(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When LeafHub returns a key it must override the .env key."""
+    isolated_env_file.write_text(
+        "REWRITE_BACKEND=external\nREWRITE_API_KEY=sk-from-dotenv\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("REWRITE_API_KEY", raising=False)
+
+    # Patch _try_leafhub to simulate a linked project
+    monkeypatch.setattr(
+        rc, "_try_leafhub",
+        lambda *a, **k: {"REWRITE_API_KEY": "sk-from-leafhub"},
+    )
+    result = rc.resolve_credentials()
+    assert os.environ.get("REWRITE_API_KEY") == "sk-from-leafhub"
+    assert result["leafhub_active"] is True
+
+
+# ── Placeholder rejection ─────────────────────────────────────────────────────
+
+def test_unresolved_placeholder_rejected() -> None:
     import warnings
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        result = rc.resolve_api_key(profile)
-    assert result["value"] == "" or result["value"] is None or not result["value"]
+        result = rc._trim_credential("${MY_API_KEY}")
+    assert result is None
+    assert len(w) == 1
 
 
-# ── Env injection (_profile_to_env) ──────────────────────────────────────────
+def test_dollar_only_placeholder_rejected() -> None:
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = rc._trim_credential("$MY_API_KEY")
+    assert result is None
+    assert len(w) == 1
 
-def test_local_profile_env_injection(isolated_config) -> None:
-    profile = {"backend": "local", "model_path": "./models/Qwen3-VL-8B-Instruct"}
-    env = rc._profile_to_env(profile)
-    assert env["REWRITE_BACKEND"] == "local"
-    assert "Qwen3" in env["REWRITE_MODEL_PATH"]
+
+def test_real_key_not_rejected() -> None:
+    assert rc._trim_credential("sk-real-key-abc123") == "sk-real-key-abc123"
 
 
-def test_external_profile_env_injection(isolated_config) -> None:
-    profile = {
-        "backend": "external",
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o",
-        "api_key": "sk-xxx",
-    }
-    env = rc._profile_to_env(profile)
-    assert env["REWRITE_BACKEND"] == "external"
-    assert env["REWRITE_BASE_URL"] == "https://api.openai.com/v1"
-    assert env["REWRITE_MODEL"] == "gpt-4o"
+# ── Provider key candidates ───────────────────────────────────────────────────
+
+def test_provider_candidates_openai() -> None:
+    cands = rc.get_provider_env_api_key_candidates("openai")
+    assert "REWRITE_API_KEY" in cands
+    assert "OPENAI_API_KEY" in cands
+    assert cands[0] == "REWRITE_API_KEY"
+
+
+def test_provider_candidates_unknown() -> None:
+    cands = rc.get_provider_env_api_key_candidates("unknown-provider")
+    assert cands == ["REWRITE_API_KEY"]
+
+
+def test_provider_candidates_alias() -> None:
+    """custom-openai should resolve to openai's candidates."""
+    cands = rc.get_provider_env_api_key_candidates("custom-openai")
+    assert "OPENAI_API_KEY" in cands
+
+
+# ── first_defined ─────────────────────────────────────────────────────────────
+
+def test_first_defined_picks_first_non_empty() -> None:
+    assert rc.first_defined(None, "", "found", "second") == "found"
+
+
+def test_first_defined_all_empty_returns_none() -> None:
+    assert rc.first_defined(None, "", None) is None
+
+
+def test_first_defined_single_value() -> None:
+    assert rc.first_defined("only") == "only"
+
+
+# ── normalize_provider_id ─────────────────────────────────────────────────────
+
+def test_normalize_provider_id_basic() -> None:
+    assert rc.normalize_provider_id("OpenAI") == "openai"
+
+
+def test_normalize_provider_id_spaces() -> None:
+    assert rc.normalize_provider_id("My Provider") == "my-provider"
+
+
+def test_normalize_provider_id_empty() -> None:
+    assert rc.normalize_provider_id("") == ""
+
+
+# ── mask_secret ───────────────────────────────────────────────────────────────
+
+def test_mask_secret_long() -> None:
+    masked = rc.mask_secret("sk-abcdefghijklmn")
+    assert "sk-a" in masked
+    assert "lmn" in masked
+    assert "..." in masked
+
+
+def test_mask_secret_short() -> None:
+    assert rc.mask_secret("abc") == "***"
+
+
+def test_mask_secret_empty() -> None:
+    assert rc.mask_secret("") == "(empty)"
+
+
+# ── LeafHub optional-field propagation ────────────────────────────────────────
+
+def test_resolve_credentials_leafhub_propagates_base_url(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REWRITE_BASE_URL from LeafHub is injected into os.environ."""
+    monkeypatch.delenv("REWRITE_API_KEY", raising=False)
+    monkeypatch.delenv("REWRITE_BASE_URL", raising=False)
+
+    monkeypatch.setattr(
+        rc, "_try_leafhub",
+        lambda *a, **k: {
+            "REWRITE_API_KEY": "sk-lh",
+            "REWRITE_BASE_URL": "https://api.minimax.io/anthropic",
+        },
+    )
+    rc.resolve_credentials()
+    assert os.environ.get("REWRITE_BASE_URL") == "https://api.minimax.io/anthropic"
+
+
+def test_resolve_credentials_leafhub_propagates_auth_mode(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_LEAFHUB_AUTH_MODE is applied to REWRITE_AUTH_MODE when not already set."""
+    monkeypatch.delenv("REWRITE_API_KEY", raising=False)
+    monkeypatch.delenv("REWRITE_AUTH_MODE", raising=False)
+
+    monkeypatch.setattr(
+        rc, "_try_leafhub",
+        lambda *a, **k: {
+            "REWRITE_API_KEY": "sk-lh",
+            "_LEAFHUB_AUTH_MODE": "x-api-key",
+        },
+    )
+    rc.resolve_credentials()
+    assert os.environ.get("REWRITE_AUTH_MODE") == "x-api-key"
+
+
+def test_resolve_credentials_dotenv_auth_mode_not_overridden(
+    isolated_env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """.env REWRITE_AUTH_MODE takes precedence over LeafHub's _LEAFHUB_AUTH_MODE."""
+    isolated_env_file.write_text(
+        "REWRITE_BACKEND=external\nREWRITE_AUTH_MODE=bearer\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("REWRITE_API_KEY", raising=False)
+    monkeypatch.delenv("REWRITE_AUTH_MODE", raising=False)
+
+    monkeypatch.setattr(
+        rc, "_try_leafhub",
+        lambda *a, **k: {
+            "REWRITE_API_KEY": "sk-lh",
+            "_LEAFHUB_AUTH_MODE": "x-api-key",  # should lose to .env
+        },
+    )
+    rc.resolve_credentials()
+    # .env loaded first (override=False) sets REWRITE_AUTH_MODE=bearer;
+    # _LEAFHUB_AUTH_MODE should not overwrite it
+    assert os.environ.get("REWRITE_AUTH_MODE") == "bearer"

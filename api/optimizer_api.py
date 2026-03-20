@@ -57,57 +57,30 @@ def _get_runtime_health_snapshot() -> Dict[str, str]:
                 or getattr(runtime, "DEVICE", "unknown")
             )
             return {
-                "device": device,
+                "device":          device,
                 "rewrite_backend": getattr(runtime, "REWRITE_BACKEND", "unknown"),
                 "rewrite_api_kind": getattr(runtime, "REWRITE_API_KIND", ""),
-                "rewrite_profile": getattr(runtime, "ACTIVE_REWRITE_PROFILE_NAME", os.getenv("REWRITE_PROFILE", "")),
-                "rewrite_model": getattr(runtime, "REWRITE_MODEL", ""),
+                "rewrite_model":   getattr(runtime, "REWRITE_MODEL", ""),
+                "credential_source": os.getenv("REWRITE_CREDENTIAL_SOURCE", ""),
             }
 
-    from scripts import rewrite_config
-
-    selected = rewrite_config.load_selected_profile()
-    profile = selected.get("profile") if isinstance(selected, dict) else None
-    backend = rewrite_config.first_defined(
-        rewrite_config.resolve_profile_value(profile, "backend"),
-        os.getenv("REWRITE_BACKEND"),
-        rewrite_config.legacy_env_first("backend"),
-        "local",
-    ) or "local"
+    # Runtime not yet loaded — read directly from env (populated by resolve_credentials).
+    backend = (os.getenv("REWRITE_BACKEND") or "local").strip().lower()
     if backend == "openai_api":
         backend = "external"
 
-    # For local backend the model identity comes from the path basename.
     if backend == "local":
-        model_path = rewrite_config.first_defined(
-            rewrite_config.resolve_profile_value(profile, "model_path"),
-            os.getenv("REWRITE_MODEL_PATH"),
-            rewrite_config.legacy_env_first("model_path"),
-            "./models/Qwen3-VL-8B-Instruct",
-        ) or "./models/Qwen3-VL-8B-Instruct"
+        model_path = os.getenv("REWRITE_MODEL_PATH") or "./models/Qwen3-VL-8B-Instruct"
         rewrite_model = Path(model_path).name
     else:
-        rewrite_model = rewrite_config.first_defined(
-            rewrite_config.resolve_profile_value(profile, "model"),
-            os.getenv("REWRITE_MODEL"),
-            rewrite_config.legacy_env_first("model"),
-            "",
-        ) or ""
+        rewrite_model = os.getenv("REWRITE_MODEL", "")
 
     return {
-        "device": os.getenv("OPTIMIZER_DEVICE_HINT", "unknown"),
-        "rewrite_backend": backend,
-        "rewrite_api_kind": rewrite_config.first_defined(
-            rewrite_config.resolve_profile_value(profile, "api_kind"),
-            os.getenv("REWRITE_API_KIND"),
-            "",
-        ) or "",
-        "rewrite_profile": (
-            str(selected["name"])
-            if isinstance(selected, dict) and selected.get("name")
-            else os.getenv("REWRITE_PROFILE", "")
-        ),
-        "rewrite_model": rewrite_model,
+        "device":           os.getenv("OPTIMIZER_DEVICE_HINT", "unknown"),
+        "rewrite_backend":  backend,
+        "rewrite_api_kind": os.getenv("REWRITE_API_KIND", ""),
+        "rewrite_model":    rewrite_model,
+        "credential_source": os.getenv("REWRITE_CREDENTIAL_SOURCE", ""),
     }
 
 

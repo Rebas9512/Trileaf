@@ -35,6 +35,13 @@ jobs:
       - name: Build distribution wheel
         run: python -m pip wheel . --no-deps --no-build-isolation -w dist
 
+      - name: Smoke-test wheel install
+        shell: bash
+        run: |
+          pip install dist/*.whl --no-deps
+          python -c "import trileaf_cli; print('wheel import OK')"
+          python -c "from scripts import rewrite_config, onboarding, rewrite_provider_cli; print('scripts import OK')"
+
       # ── Setup script syntax checks ────────────────────────────────────────
       - name: setup.sh syntax (Unix)
         if: runner.os != 'Windows'

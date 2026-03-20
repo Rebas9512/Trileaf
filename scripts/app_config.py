@@ -9,8 +9,8 @@ This replaces the .env file for all non-secret, non-rewrite-provider settings:
   - dashboard:   server host / port
 
 Rewrite-provider credentials (API keys, model selections, backend choice) are
-still managed by rewrite_config.py via ~/.trileaf/rewrite_profiles.json.
-Environment variables remain available only as manual override hooks for CI,
+managed by rewrite_config.py via PROJECT_ROOT/.env (LeafHub → .env → env fallback).
+Environment variables remain available as manual override hooks for CI,
 Docker, or advanced local debugging.
 """
 

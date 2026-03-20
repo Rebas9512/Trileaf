@@ -4,14 +4,13 @@ Shared pytest fixtures.
 Design constraints
 ──────────────────
 • No real model downloads — fake model dirs contain a single sentinel file.
-• Profile store is redirected to a tmp_path so tests never touch ~/.trileaf.
+• ENV_FILE is redirected to a tmp_path so tests never touch PROJECT_ROOT/.env.
 • _YES_ALL in onboarding is reset between tests via the yes_all fixture.
-• Legacy env aliases are cleared around config tests to avoid cross-contamination.
+• Rewrite-related env vars are cleared around tests via clean_env.
 """
 
 from __future__ import annotations
 
-import importlib
 import os
 from pathlib import Path
 
@@ -32,27 +31,21 @@ def fake_model_dir(tmp_path: Path) -> Path:
     return d
 
 
-# ── Isolated profile store ────────────────────────────────────────────────────
+# ── Isolated .env file ────────────────────────────────────────────────────────
 
 @pytest.fixture
-def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def isolated_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
-    Redirect rewrite_config's CONFIG_PATH and USER_CONFIG_DIR to a temp location.
-    Also neutralise the legacy path so migration tests are explicit.
+    Redirect rewrite_config.ENV_FILE to a temp location.
+    Tests that call rewrite_config functions (load_dot_env, write_dot_env,
+    resolve_credentials, _read_dot_env_key) will use this temp file instead
+    of the real PROJECT_ROOT/.env.
     """
     import scripts.rewrite_config as rc
 
-    config_dir = tmp_path / "user-config"
-    config_dir.mkdir()
-    config_file = config_dir / "rewrite_profiles.json"
-    legacy_file = tmp_path / "legacy_profiles.json"  # does NOT exist by default
-
-    monkeypatch.setattr(rc, "USER_CONFIG_DIR", config_dir)
-    monkeypatch.setattr(rc, "CONFIG_PATH", config_file)
-    monkeypatch.setattr(rc, "_LEGACY_CONFIG_PATH", legacy_file)
-    monkeypatch.setattr(rc, "_LEGACY_USER_CONFIG_PATH", tmp_path / "legacy_user_profiles.json")
-
-    return {"dir": config_dir, "config": config_file, "legacy": legacy_file}
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(rc, "ENV_FILE", env_file)
+    return env_file
 
 
 # ── Headless onboarding ───────────────────────────────────────────────────────
@@ -73,8 +66,12 @@ def clean_env(monkeypatch: pytest.MonkeyPatch):
     """Remove model-path and rewrite-backend env vars so tests start from defaults."""
     for var in (
         "DESKLIB_MODEL_PATH", "MPNET_MODEL_PATH",
-        "REWRITE_BACKEND", "QWEN_BACKEND",
+        "REWRITE_BACKEND",
         "REWRITE_MODEL_PATH", "QWEN_MODEL_PATH",
-        "REWRITE_PROFILE", "REWRITE_BASE_URL", "REWRITE_MODEL", "REWRITE_API_KEY",
+        "REWRITE_BASE_URL", "REWRITE_MODEL",
+        "REWRITE_API_KEY", "REWRITE_PROVIDER_ID",
+        "REWRITE_CREDENTIAL_SOURCE",
+        "QWEN_BACKEND", "QWEN_API_BASE_URL", "QWEN_API_MODEL",
+        "LEAFHUB_ALIAS",
     ):
         monkeypatch.delenv(var, raising=False)

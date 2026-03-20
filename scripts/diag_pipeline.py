@@ -48,52 +48,48 @@ def _hdr(title: str) -> None:
     print(_DIVIDER)
 
 
-# ── Layer 1: Profile resolution ───────────────────────────────────────────────
+# ── Layer 1: Credential resolution ────────────────────────────────────────────
 
 def check_profile() -> dict:
-    _hdr("Layer 1 — Active profile & backend")
+    _hdr("Layer 1 — Credential & backend resolution")
     from scripts import rewrite_config as rc
+    import os
 
-    selected = rc.load_selected_profile()
-    if selected is None:
-        _fail("load_selected_profile() returned None — no profile found")
-        return {}
+    # Load .env and resolve credentials (LeafHub → .env → env)
+    result = rc.resolve_credentials()
+    backend = (os.getenv("REWRITE_BACKEND") or "local").strip().lower()
+    if backend == "openai_api":
+        backend = "external"
+    cred_source = result.get("credential_source", "none")
 
-    name = str(selected["name"])
-    profile = selected["profile"]
-    backend = rc.first_defined(
-        rc.resolve_profile_value(profile, "backend"), "local"
-    ) or "local"
-
-    _ok(f"Profile name:   {name}")
     _ok(f"Backend:        {backend}")
+    _ok(f"Credential:     {cred_source}")
 
     if backend in ("external", "openai_api"):
-        api_kind = rc.resolve_profile_value(profile, "api_kind") or "openai-chat-completions"
-        base_url = rc.resolve_profile_value(profile, "base_url") or ""
-        model    = rc.resolve_profile_value(profile, "model") or ""
-        key_info = rc.resolve_api_key(profile, provider_id=rc.resolve_provider_id(profile))
-        api_key  = str(key_info.get("value") or "")
+        api_kind = os.getenv("REWRITE_API_KIND") or "openai-chat-completions"
+        base_url = os.getenv("REWRITE_BASE_URL") or rc.legacy_env_first("base_url") or ""
+        model    = os.getenv("REWRITE_MODEL") or rc.legacy_env_first("model") or ""
+        api_key  = os.getenv("REWRITE_API_KEY", "")
 
         _ok(f"api_kind:       {api_kind}")
         _ok(f"base_url:       {base_url}")
         _ok(f"model:          {model}")
-        _ok(f"api_key:        {'set (' + key_info.get('source','?') + ')' if api_key else '(NOT SET)'}")
+        _ok(f"api_key:        {'set (' + cred_source + ')' if api_key else '(NOT SET)'}")
 
         if not base_url:
-            _fail("base_url is empty — external backend will fail")
+            _fail("REWRITE_BASE_URL is empty — external backend will fail")
         if not model:
-            _warn("model is empty")
+            _warn("REWRITE_MODEL is empty")
         if not api_key:
-            _fail("API key is not set")
+            _fail("API key is not set — run: trileaf config")
     else:
-        model_path = rc.resolve_profile_value(profile, "model_path") or "./models/Qwen3-VL-8B-Instruct"
+        model_path = os.getenv("REWRITE_MODEL_PATH") or rc.legacy_env_first("model_path") or "./models/Qwen3-VL-8B-Instruct"
         resolved = PROJECT_ROOT / model_path if not Path(model_path).is_absolute() else Path(model_path)
         exists = resolved.exists()
         tag = "[OK]" if exists else "[MISSING]"
         _info(f"model_path:     {tag}  {resolved}")
 
-    return {"name": name, "backend": backend, "profile": profile}
+    return {"backend": backend, "profile": {}}
 
 
 # ── Layer 2: Raw API connectivity ─────────────────────────────────────────────
@@ -109,15 +105,15 @@ def check_api_raw(profile_info: dict, *, show_full_response: bool = False) -> bo
         return True
 
     import requests as _req
+    import os
     from scripts import rewrite_config as rc
 
-    api_kind = rc.resolve_profile_value(profile, "api_kind") or "openai-chat-completions"
-    base_url = (rc.resolve_profile_value(profile, "base_url") or "").rstrip("/")
-    model    = rc.resolve_profile_value(profile, "model") or ""
-    key_info = rc.resolve_api_key(profile, provider_id=rc.resolve_provider_id(profile))
-    api_key  = str(key_info.get("value") or "")
-    auth_mode = (rc.resolve_profile_value(profile, "auth_mode") or "bearer").strip().lower()
-    auth_header = rc.resolve_profile_value(profile, "auth_header") or "Authorization"
+    api_kind    = (os.getenv("REWRITE_API_KIND") or "openai-chat-completions").strip().lower()
+    base_url    = (os.getenv("REWRITE_BASE_URL") or rc.legacy_env_first("base_url") or "").rstrip("/")
+    model       = os.getenv("REWRITE_MODEL") or rc.legacy_env_first("model") or ""
+    api_key     = os.getenv("REWRITE_API_KEY", "")
+    auth_mode   = (os.getenv("REWRITE_AUTH_MODE") or "bearer").strip().lower()
+    auth_header = os.getenv("REWRITE_AUTH_HEADER") or "Authorization"
 
     headers: dict = {"Content-Type": "application/json"}
     if api_key:

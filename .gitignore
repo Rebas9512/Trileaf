@@ -1,16 +1,25 @@
 __pycache__/
 *.py[cod]
 
-# Optional local env overrides for CI / Docker / debugging only.
-# Normal user configuration lives in ~/.trileaf/config.json and
-# ~/.trileaf/rewrite_profiles.json.
+# Local credential and provider config — never commit these.
+# Run 'trileaf config' to create/edit .env.
 .env
 .env.*
+.leafhub
+leafhub_probe.py
 .claude/
-.rewrite_profiles.local.json
 
 # Virtual environment
 .venv/
+
+# Build / packaging artefacts
+*.egg-info/
+dist/
+build/
+*.whl
+
+# LeafHub local directory (probe copy or local dev install)
+leafhub/
 
 # Reference / local-only directories (not for distribution)
 openclaw/

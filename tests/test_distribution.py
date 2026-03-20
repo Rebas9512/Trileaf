@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_TRACKED = [
     "README.md",
+    "LICENSE",
     "MANIFEST.in",
     ".gitignore",
     "requirements.txt",
@@ -96,16 +97,9 @@ def test_python_syntax(rel_path: str) -> None:
 
 # ── Distribution docs + packaging layout ─────────────────────────────────────
 
-def test_readme_uses_json_config_files() -> None:
+def test_readme_uses_pipeline_config_file() -> None:
     src = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     assert "~/.trileaf/config.json" in src
-    assert "~/.trileaf/rewrite_profiles.json" in src
-
-
-def test_readme_does_not_advertise_env_as_primary_config() -> None:
-    src = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8").lower()
-    assert ".env.example" not in src
-    assert "copy to .env" not in src
 
 
 def test_download_scripts_are_packaged_modules() -> None:

@@ -105,8 +105,8 @@ All Trileaf operations are available as subcommands:
 | Command | What it does |
 |---------|-------------|
 | `trileaf run` | Start the dashboard server |
-| `trileaf setup` | Run the setup wizard (download models, configure provider) |
-| `trileaf config` | Add or edit rewrite provider profiles |
+| `trileaf onboard` | First-time setup wizard (models + provider) |
+| `trileaf config` | Reconfigure the rewrite provider |
 | `trileaf weight` | Show or update Pareto utility weights |
 | `trileaf update` | Pull the latest version from git and refresh packages |
 | `trileaf doctor` | Environment and model health check |
@@ -140,15 +140,15 @@ trileaf remove --purge-source
 
 ---
 
-## 2. Onboarding Overview
+## 2. Onboarding
 
-The setup wizard (`trileaf setup`) walks through four steps. Here is what is required, what is optional, and what hardware you need.
+The first-time wizard (`trileaf onboard`) walks through four steps.
 
 ### Step 1 — Python environment check
 
 Verifies torch, sentence-transformers, and huggingface_hub are installed. Automatically satisfied after setup completes.
 
-### Step 2 — Detection models (required local runtime, ~0.9 GB total)
+### Step 2 — Detection models (required, ~0.9 GB total)
 
 These two models score every rewrite candidate and are the **minimum local requirement** for running Trileaf. They are always required, regardless of which rewrite backend you choose. Both are public Hugging Face repos and download without a HuggingFace account.
 
@@ -157,47 +157,80 @@ These two models score every rewrite candidate and are the **minimum local requi
 | [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) | ~0.5 GB | AI-content probability scorer |
 | [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) | ~0.4 GB | Semantic similarity measurement |
 
-In Trileaf, these models are used as follows:
+These models are downloaded during onboarding and stored locally. The two scoring models run comfortably on CPU — CUDA is not required. On Apple Silicon they can also run on MPS.
 
-- `desklib/ai-text-detector-v1.01` is the AI-score model. According to its model card, it is a fine-tuned `microsoft/deberta-v3-large` English text classifier that outputs the probability that a passage is AI-generated.
-- `sentence-transformers/paraphrase-mpnet-base-v2` is the semantic-preservation model. According to its model card, it maps sentences and paragraphs into a 768-dimensional dense embedding space; Trileaf uses those embeddings for cosine similarity, chunk-level semantic scoring, and worst-sentence alignment checks.
+### Step 3 — Rewrite provider
 
-These detection models are downloaded during onboarding and stored locally; they are required even when the rewrite step itself is handled by an external API.
+The rewrite provider generates candidate rewrites for each text chunk. Three options are available:
 
-**Hardware for detection-only mode** (external rewrite API): the two scoring models run comfortably on CPU. CUDA is not required; on Apple Silicon they can also run on MPS.
+#### Option A — LeafHub (recommended)
 
-### Step 3 — Rewrite provider (choose one)
+[LeafHub](https://github.com/Rebas9512/Leafhub) is a local encrypted API-key vault. It stores your provider credentials in an AES-256-GCM encrypted file (`~/.leafhub/providers.enc`) and serves them to Trileaf at runtime — without exposing them in any dotfile or shell history.
 
-The rewrite provider generates candidate rewrites for each chunk. Two backends are available:
-
-#### Option A — External API (recommended for most users)
-
-Connect an external provider or compatible gateway — OpenAI, Anthropic, Groq, Ollama, vLLM, LiteLLM, OpenRouter, and similar services all fit here. No local GPU or local rewrite-model download is required.
-
-The wizard asks for:
-- Provider / endpoint URL
-- Model name
-- API key (stored securely in `~/.trileaf/`, never in the repo)
-
-If Step 2 is green and this provider is configured, Trileaf is ready to run.
-
-Configure or reconfigure at any time:
-```bash
-trileaf config
+```
+LeafHub vault  →  trileaf runtime  →  external API
 ```
 
-**Tested and recommended models:** any capable instruction-tuned model works well. Cloud models (GPT-4o, Claude Sonnet, Gemini Pro) tend to produce high-quality rewrites out of the box.
+During `trileaf onboard` or `trileaf config`, selecting **LeafHub** will:
 
-#### Option B — Local Qwen3-VL-8B (optional fully offline mode)
+1. Create a LeafHub project named `trileaf` and link it to this directory (a `.leafhub` token file is written)
+2. Let you bind a provider (e.g. MiniMax, OpenAI) to an alias (e.g. `minimax`)
+3. Automatically read `base_url`, `model`, `api_format`, and `auth_mode` from the bound provider — no further prompts
+
+After setup, the `.env` file contains only the alias reference:
+
+```
+LEAFHUB_ALIAS=minimax
+REWRITE_BACKEND=external
+REWRITE_BASE_URL=https://api.minimax.io/anthropic
+REWRITE_MODEL=MiniMax-M2.5
+```
+
+The API key itself lives only in the LeafHub vault — never on disk in plain text.
+
+**Install LeafHub** (macOS / Linux / WSL):
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.ps1 | iex
+```
+
+After the installer completes, open a new terminal so the updated PATH takes effect, then run `trileaf onboard` again.
+
+**Automatic fallback if LeafHub setup fails**
+
+If LeafHub is installed but cannot complete the project-link step (e.g. the manage server is not running, a network error, or a corrupted dotfile), the onboarding wizard automatically falls back to the `.env` flow. A clear error message is shown explaining what failed, and the interactive `.env` wizard opens immediately — no manual intervention needed. You can re-link LeafHub later with `trileaf config`.
+
+#### Option B — External API key in `.env` (simple fallback)
+
+If you prefer not to use LeafHub, the wizard stores the API key directly in `PROJECT_ROOT/.env` (chmod 600, git-ignored). This works for quick local use or CI scenarios where LeafHub is not available.
+
+> **Security note:** The `.env` approach stores the API key in plain text on disk. Anyone with read access to the project directory can read it. Use LeafHub for better key hygiene, especially on shared machines.
+
+The `.env` file written by the wizard looks like:
+
+```
+REWRITE_BACKEND=external
+REWRITE_BASE_URL=https://api.openai.com/v1
+REWRITE_MODEL=gpt-4o
+REWRITE_API_KEY=sk-...
+```
+
+Supported providers include OpenAI, Anthropic, Groq, Mistral, OpenRouter, xAI, Ollama, vLLM, and any OpenAI-compatible gateway.
+
+#### Option C — Local Qwen3-VL-8B (fully offline)
 
 Downloads and runs `Qwen/Qwen3-VL-8B-Instruct` locally. No API key or internet connection needed at inference time.
 
 | Config | VRAM required |
 |--------|--------------|
-| Scoring models only (detection-only) | ~2 GB or CPU |
+| Scoring models only (external rewrite API) | ~2 GB or CPU |
 | Scoring + local Qwen3-VL-8B (bf16) | ~18 GB minimum, **24 GB recommended** |
 
-> If your GPU has less than 16 GB VRAM, use Option A (external API) for the rewrite step. The scoring pipeline still runs locally and does not require a large GPU.
+> If your GPU has less than 16 GB VRAM, use Option A or B for the rewrite step.
 
 Download:
 ```bash
@@ -206,14 +239,76 @@ python -m scripts.download_scripts.qwen3_vl_download   # ~16 GB
 
 ### Step 4 — Final validation
 
-`check_env.py` verifies the two required detection models and the active rewrite profile. Re-run at any time:
+`check_env.py` verifies the two required detection models and the active rewrite configuration. Re-run at any time:
 ```bash
 trileaf doctor
 ```
 
 ---
 
-## 3. Project Features
+## 3. Configuring the Rewrite Provider
+
+### First-time setup
+
+```bash
+trileaf onboard
+```
+
+The wizard guides you through all four steps end-to-end.
+
+### Reconfiguring the provider
+
+```bash
+trileaf config
+```
+
+This re-runs only the provider wizard (Step 3). It is the recommended way to switch between providers, update model names, or re-link a LeafHub project.
+
+### LeafHub flow (linked project)
+
+When a LeafHub project is already linked, `trileaf config` detects the bound aliases automatically:
+
+```
+  Bound aliases in this LeafHub project:
+    1. minimax
+    2. Enter a different alias
+  Select alias: 1
+
+  Base URL:  https://api.minimax.io/anthropic
+  Model:     MiniMax-M2.5
+
+  [OK] Wrote .env
+       LeafHub alias: minimax
+       Base URL:     https://api.minimax.io/anthropic
+       Model:        MiniMax-M2.5
+       API key fetched from LeafHub vault at runtime.
+```
+
+If the selected alias has a complete provider profile in LeafHub (`base_url` + `model`), no further prompts are shown. If the profile is partial, only the missing fields are asked.
+
+### Credential resolution order
+
+At runtime, Trileaf resolves credentials in this priority order:
+
+```
+1. LeafHub vault      → REWRITE_API_KEY (+ base_url / model / auth_mode from provider config)
+2. PROJECT_ROOT/.env  → all REWRITE_* keys loaded as base layer
+3. os.environ         → provider-specific fallbacks (e.g. OPENAI_API_KEY)
+```
+
+LeafHub's API key always wins. For other fields (model name, auth mode), the `.env` value takes priority over the LeafHub-provided default — this lets you override individual settings locally without changing the vault.
+
+### Health check
+
+```bash
+trileaf doctor
+```
+
+Prints device info, model paths, and rewrite backend status. Credential source is shown as `leafhub`, `dotenv`, or `env` depending on what resolved.
+
+---
+
+## 4. Project Features
 
 ### Core idea
 
@@ -260,9 +355,7 @@ The dashboard toggle selects between two chunking strategies:
 | **Short text** | ~200 chars | Each paragraph is its own chunk; large paragraphs split at sentence boundaries | Texts up to ~3 000 chars; fine-grained control; tends to produce the largest AI-score reduction |
 | **Long text** | ~400 chars | Consecutive short paragraphs are merged until the target size is reached; large paragraphs are still sentence-split | Texts of ~2 000–8 000 chars; preserves rhetorical flow and style consistency across paragraphs |
 
-Both modes pass through the same Pareto-selection scoring pipeline. Short-text mode produces more chunks and therefore more individual scoring/rewriting calls, which increases total processing time but gives the model finer editorial control. Long-text mode reduces chunk count (a 2 000-char document splits into roughly 3–5 chunks) and keeps adjacent paragraphs together, which improves thematic coherence in the output.
-
-The 50 000-character API limit applies in both modes.
+Both modes pass through the same Pareto-selection scoring pipeline. The 50 000-character API limit applies in both modes.
 
 ### Two-pass optimization
 
@@ -273,36 +366,21 @@ The **Run Mode** toggle on the dashboard selects between two execution strategie
 | **Single Run** | One standard optimization pass — default for most tasks |
 | **Double Run** | The text passes through the full pipeline twice; the first-pass output becomes the input for the second pass |
 
-In Double Run mode the original textarea text is never modified. The second pass uses an internal buffer so the source copy is always preserved. Final AI-score deltas are reported relative to the **original** input from Pass 1, so the summary accurately reflects the cumulative improvement across both passes.
-
-This second pass is effectively a second optimisation layer: after the best first-pass candidates are selected, the pipeline can run again to smooth out remaining LLM regularities and add another layer of stylistic variation. It often produces writing that feels more organic than a single pass, although processing time roughly doubles and the risk of semantic drift rises as well.
+In Double Run mode the original textarea text is never modified. The second pass uses an internal buffer so the source copy is always preserved. Final AI-score deltas are reported relative to the **original** input from Pass 1.
 
 ### Bring your own model
 
-Bring-your-own-model support is the core product idea, not a compatibility extra. The rewrite backend is fully pluggable, so you can use the model you already like and let it optimise its own prose inside the same standardized evaluation loop.
-
-Any OpenAI-compatible API endpoint works, including:
+The rewrite backend is fully pluggable. Any OpenAI-compatible API endpoint works, including:
 
 - Cloud providers (OpenAI, Anthropic, Google Gemini, Groq, Mistral, xAI)
 - Self-hosted servers (Ollama, vLLM, LiteLLM)
 - Regional providers (MiniMax, Moonshot/Kimi, OpenRouter)
 
-Different models produce meaningfully different rewrite styles. A model with stronger instruction-following and natural language fluency will generally produce better candidates, while Trileaf's scoring-and-selection layer keeps the optimisation process consistent regardless of which model backs it.
-
-**Local development baseline:** Qwen3-VL-8B-Instruct running locally already produces strong results on most writing tasks, with effective AI-pattern avoidance and good factual preservation.
-
-### Multiple provider profiles
-
-The wizard stores named profiles in `~/.trileaf/rewrite_profiles.json`. Switch between them without re-running setup:
-
-```bash
-trileaf run --profile my-openai-profile
-trileaf config    # add / edit profiles
-```
+Configure or reconfigure at any time with `trileaf config`.
 
 ---
 
-## 4. Pipeline Architecture
+## 5. Pipeline Architecture
 
 ### Topology overview
 
@@ -313,7 +391,7 @@ Input text
 ┌─────────────────────────────────────────────────────┐
 │  Chunker                                            │
 │  clean_text() → split_text() → chunks               │
-│  (paragraph-aware; ~200 chars short / ~400 chars long mode) │
+│  (paragraph-aware; ~200 chars short / ~400 long)    │
 └───────────────────┬─────────────────────────────────┘
                     │  [chunk₀, chunk₁, … chunkₙ]
                     │
@@ -398,48 +476,42 @@ trileaf weight --ai 0.60 --sem 0.35 --risk 0.05      # update (must sum to 1.0)
 
 ---
 
-## Project structure
+## 6. Project Structure
 
 ```
-├── trileaf_cli.py                     # CLI entry point (trileaf run / setup / config / weight / update / doctor)
-├── run.py                          # Server launcher (called by trileaf_cli)
-├── pyproject.toml                  # Package metadata — registers the trileaf command
-├── install.sh                      # One-liner installer (curl … | bash)
-├── setup.sh / setup.ps1           # Manual clone-and-run setup scripts
-├── requirements.txt               # Python dependencies
+├── trileaf_cli.py                     # CLI entry point
+├── run.py                             # Server launcher (called by trileaf_cli)
+├── pyproject.toml                     # Package metadata — registers the trileaf command
+├── install.sh / install.ps1 / install.cmd  # One-liner installers
+├── setup.sh / setup.ps1               # Manual clone-and-run setup scripts
+├── requirements.txt                   # Python runtime dependencies
+├── requirements-dev.txt               # CI / test dependencies
 ├── api/
-│   ├── optimizer_api.py           # FastAPI app + WebSocket broadcast
-│   └── static/                    # Packaged dashboard assets
+│   ├── optimizer_api.py               # FastAPI app + WebSocket broadcast
+│   └── static/                        # Dashboard assets (HTML / JS / CSS)
 ├── scripts/
-│   ├── onboarding.py              # First-time setup wizard
-│   ├── check_env.py               # Environment / health check (--doctor)
-│   ├── orchestrator.py            # Pareto-selection pipeline
-│   ├── chunker.py                 # Text cleaning + splitting
-│   ├── models_runtime.py          # Model loading, caching, inference
-│   ├── rewrite_config.py          # Provider profile store management
-│   ├── rewrite_provider_cli.py    # Interactive provider configuration wizard
-│   ├── _version.py                # Single version source of truth
-│   └── download_scripts/          # Per-model HuggingFace downloaders
+│   ├── onboarding.py                  # First-time setup wizard (trileaf onboard)
+│   ├── check_env.py                   # Environment / health check (trileaf doctor)
+│   ├── rewrite_config.py              # Credential resolution (LeafHub → .env → env vars)
+│   ├── rewrite_provider_cli.py        # Interactive provider configuration wizard
+│   ├── app_config.py                  # Application config (~/.trileaf/config.json)
+│   ├── orchestrator.py                # Pareto-selection pipeline
+│   ├── chunker.py                     # Text cleaning + splitting
+│   ├── models_runtime.py              # Model loading, caching, inference, API calls
+│   ├── diag_pipeline.py               # Diagnostic / debug utilities
+│   ├── _version.py                    # Single version source of truth
+│   └── download_scripts/              # Per-model HuggingFace downloaders
 │       ├── desklib_detector_download.py
 │       ├── mpnet_download.py
 │       └── qwen3_vl_download.py
-└── models/                        # Downloaded model weights (git-ignored)
+├── tests/                             # pytest test suite (229+ tests)
+└── models/                            # Downloaded model weights (git-ignored)
 ```
 
 ---
 
-## Acknowledgements
+## 7. Acknowledgements
 
-Trileaf builds on several public components:
-
-- [**OpenClaw**](https://github.com/openclaw/openclaw): Trileaf's provider authentication and profile-configuration system is adapted from OpenClaw. The multi-profile credential store, the interactive provider wizard, and the API-key resolution chain (profile → env var → provider-specific fallback) follow patterns established there.
-- [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01): public AI-generated-text detection model used by Trileaf as its local AI-probability scorer.
-- [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2): public sentence-embedding model used by Trileaf for semantic similarity scoring and sentence-alignment checks.
-
-If you are already an OpenClaw user, configuring Trileaf's rewrite backend will feel immediately familiar: you connect a provider in the same way — endpoint URL, model name, API key — and switch between named profiles using the same flow. The profile store lives at `~/.trileaf/rewrite_profiles.json` (analogous to OpenClaw's `~/.openclaw/` directory), so credentials stay outside the repository and are never accidentally committed.
-
-To configure or reconfigure the main model:
-
-```bash
-trileaf config
-```
+- [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01): public AI-generated-text detection model used as Trileaf's local AI-probability scorer.
+- [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2): public sentence-embedding model used for semantic similarity scoring and sentence-alignment checks.
+- [**LeafHub**](https://github.com/Rebas9512/Leafhub): local encrypted API-key vault that Trileaf integrates with for secure credential management.

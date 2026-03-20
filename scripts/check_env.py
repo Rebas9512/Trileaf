@@ -64,17 +64,10 @@ def main() -> None:
     except Exception:
         __version__ = "unknown"
     print(f"=== Trileaf v{__version__} — Environment Check ===")
-    selected_profile = rewrite_config.load_selected_profile()
-    active_profile_name = (
-        str(selected_profile["name"])
-        if isinstance(selected_profile, dict) and selected_profile.get("name")
-        else os.getenv("REWRITE_PROFILE", "")
-    )
-    active_profile = (
-        selected_profile.get("profile")
-        if isinstance(selected_profile, dict)
-        else None
-    )
+    # Ensure .env is loaded before reading env vars
+    rewrite_config.load_dot_env()
+
+    credential_source = os.getenv("REWRITE_CREDENTIAL_SOURCE", "")
 
     # ── Device ────────────────────────────────────────────────────────────────
     try:
@@ -107,7 +100,6 @@ def main() -> None:
 
     # ── Model paths ───────────────────────────────────────────────────────────
     rewrite_backend = rewrite_config.first_defined(
-        rewrite_config.resolve_profile_value(active_profile, "backend"),
         os.getenv("REWRITE_BACKEND"),
         rewrite_config.legacy_env_first("backend"),
         "local",
@@ -115,8 +107,8 @@ def main() -> None:
     if rewrite_backend == "openai_api":
         rewrite_backend = "external"
 
-    if active_profile_name:
-        print(f"Rewrite profile:      {active_profile_name}")
+    if credential_source:
+        print(f"Credential source:    {credential_source}")
 
     local_models = {
         "desklib": str(app_config.resolve_model_path("desklib")),
@@ -125,7 +117,6 @@ def main() -> None:
     if rewrite_backend == "local":
         local_models["rewrite"] = str(_resolve(
             rewrite_config.first_defined(
-                rewrite_config.resolve_profile_value(active_profile, "model_path"),
                 os.getenv("REWRITE_MODEL_PATH"),
                 rewrite_config.legacy_env_first("model_path"),
                 "./models/Qwen3-VL-8B-Instruct",
@@ -151,58 +142,38 @@ def main() -> None:
 
     # ── External rewrite API config ──────────────────────────────────────────
     if rewrite_backend == "external":
-        provider_id = rewrite_config.resolve_provider_id(active_profile)
-        api_kind = rewrite_config.first_defined(
-            rewrite_config.resolve_profile_value(active_profile, "api_kind"),
-            os.getenv("REWRITE_API_KIND"),
-            "openai-chat-completions",
-        )
-        api_url = rewrite_config.first_defined(
-            rewrite_config.resolve_profile_value(active_profile, "base_url"),
-            os.getenv("REWRITE_BASE_URL"),
-            rewrite_config.legacy_env_first("base_url"),
-            "",
-        )
-        api_model = rewrite_config.first_defined(
-            rewrite_config.resolve_profile_value(active_profile, "model"),
-            os.getenv("REWRITE_MODEL"),
-            rewrite_config.legacy_env_first("model"),
-            "",
-        )
-        api_key_info = rewrite_config.resolve_api_key(
-            active_profile,
-            provider_id=provider_id,
-        )
-        api_key = str(api_key_info.get("value") or "")
-        api_key_source = str(api_key_info.get("source") or "")
+        provider_id = rewrite_config.normalize_provider_id(os.getenv("REWRITE_PROVIDER_ID", ""))
+        api_kind  = os.getenv("REWRITE_API_KIND") or "openai-chat-completions"
+        api_url   = os.getenv("REWRITE_BASE_URL") or rewrite_config.legacy_env_first("base_url") or ""
+        api_model = os.getenv("REWRITE_MODEL") or rewrite_config.legacy_env_first("model") or ""
+        api_key   = os.getenv("REWRITE_API_KEY", "")
+        leafhub_alias = rewrite_config._read_dot_env_key(rewrite_config.ENV_FILE, "LEAFHUB_ALIAS") or ""
         api_key_candidates = rewrite_config.format_env_var_list(
-            api_key_info.get("candidates") or ["REWRITE_API_KEY"]
+            rewrite_config.get_provider_env_api_key_candidates(provider_id)
         )
         print()
         print("Rewrite backend: external")
         if provider_id:
-            print(f"  provider: {provider_id}")
-        print(f"  api_kind: {api_kind}")
-        print(
-            "  base_url: "
-            f"{api_url or '(not set — configure in rewrite profile or set an env override)'}"
-        )
-        print(f"  model:    {api_model or '(not set)'}")
-        if api_key:
-            source_label = api_key_source or "profile"
-            print(f"  api_key:  set ({source_label})")
+            print(f"  provider:  {provider_id}")
+        print(f"  api_kind:  {api_kind}")
+        print(f"  base_url:  {api_url or '(not set — run: trileaf config)'}")
+        print(f"  model:     {api_model or '(not set)'}")
+        if leafhub_alias:
+            print(f"  api_key:   via LeafHub alias='{leafhub_alias}' ({credential_source or 'pending'})")
+        elif api_key:
+            print(f"  api_key:   set ({credential_source or 'env'})")
         else:
-            print(f"  api_key:  (not set; accepted env vars: {api_key_candidates})")
+            print(f"  api_key:   (not set; run 'trileaf config' or set {api_key_candidates})")
         if not api_url:
             print("  ERROR: REWRITE_BASE_URL is required for external backend")
             all_ok = False
         if not api_model:
             print("  ERROR: REWRITE_MODEL is required for external backend")
             all_ok = False
-        if not api_key:
+        if not api_key and not leafhub_alias:
             print(
-                "  ERROR: rewrite API key is required for external backend "
-                f"(profile api_key or env: {api_key_candidates})"
+                "  ERROR: rewrite API key is required — "
+                f"set REWRITE_API_KEY in .env or link LeafHub ({api_key_candidates})"
             )
             all_ok = False
 

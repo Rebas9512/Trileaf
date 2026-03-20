@@ -53,8 +53,6 @@ except ImportError:
 from scripts import app_config as _app_config
 from scripts import rewrite_config as _rewrite_config
 
-_SELECTED_REWRITE_PROFILE = _rewrite_config.load_selected_profile()
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -128,18 +126,6 @@ def _merge_json_objects(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[
     return merged
 
 
-def _resolve_profile_or_env(
-    profile: Dict[str, Any] | None,
-    profile_key: str,
-    *env_names: str,
-    default: str = "",
-    secret: bool = False,
-) -> str:
-    profile_value = _rewrite_config.resolve_profile_value(profile, profile_key, secret=secret)
-    env_value = _env_first(*env_names, default="")
-    return _rewrite_config.first_defined(profile_value, env_value, default) or default
-
-
 def select_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
@@ -151,115 +137,50 @@ def select_device() -> str:
 
 DEVICE = select_device()
 
-ACTIVE_REWRITE_PROFILE_NAME = (
-    str(_SELECTED_REWRITE_PROFILE["name"])
-    if isinstance(_SELECTED_REWRITE_PROFILE, dict) and _SELECTED_REWRITE_PROFILE.get("name")
-    else os.getenv("REWRITE_PROFILE", "")
-)
-_ACTIVE_REWRITE_PROFILE = (
-    _SELECTED_REWRITE_PROFILE.get("profile")
-    if isinstance(_SELECTED_REWRITE_PROFILE, dict)
-    else None
-)
-
-DESKLIB_MODEL_PATH = str(_app_config.resolve_model_path("desklib"))
-MPNET_MODEL_PATH   = str(_app_config.resolve_model_path("mpnet"))
-REWRITE_BACKEND    = _normalize_rewrite_backend(
+# ── Rewrite provider config — resolved from os.environ (populated by
+#    rewrite_config.resolve_credentials() before this module is imported).
+# ─────────────────────────────────────────────────────────────────────────────
+DESKLIB_MODEL_PATH  = str(_app_config.resolve_model_path("desklib"))
+MPNET_MODEL_PATH    = str(_app_config.resolve_model_path("mpnet"))
+REWRITE_BACKEND     = _normalize_rewrite_backend(
     _rewrite_config.first_defined(
-        _rewrite_config.resolve_profile_value(_ACTIVE_REWRITE_PROFILE, "backend"),
         os.getenv("REWRITE_BACKEND"),
         _rewrite_config.legacy_env_first("backend"),
         "local",
     ) or "local"
 )
-REWRITE_MODEL_PATH = _resolve(
+REWRITE_MODEL_PATH  = _resolve(
     _rewrite_config.first_defined(
-        _rewrite_config.resolve_profile_value(_ACTIVE_REWRITE_PROFILE, "model_path"),
         os.getenv("REWRITE_MODEL_PATH"),
         _rewrite_config.legacy_env_first("model_path"),
         "./models/Qwen3-VL-8B-Instruct",
     ) or "./models/Qwen3-VL-8B-Instruct"
 )
-REWRITE_API_KIND   = _resolve_profile_or_env(
-    _ACTIVE_REWRITE_PROFILE,
-    "api_kind",
-    "REWRITE_API_KIND",
-    default="openai-chat-completions",
-).strip().lower()
-REWRITE_BASE_URL   = _resolve_profile_or_env(
-    _ACTIVE_REWRITE_PROFILE,
-    "base_url",
-    "REWRITE_BASE_URL",
-    default="",
+REWRITE_API_KIND    = (os.getenv("REWRITE_API_KIND") or "openai-chat-completions").strip().lower()
+REWRITE_BASE_URL    = (
+    os.getenv("REWRITE_BASE_URL")
+    or _rewrite_config.legacy_env_first("base_url")
+    or ""
 )
-if not REWRITE_BASE_URL:
-    REWRITE_BASE_URL = _rewrite_config.legacy_env_first("base_url") or ""
-REWRITE_MODEL      = _resolve_profile_or_env(
-    _ACTIVE_REWRITE_PROFILE,
-    "model",
-    "REWRITE_MODEL",
-    default="Qwen3-VL-8B-Instruct",
+REWRITE_MODEL       = (
+    os.getenv("REWRITE_MODEL")
+    or _rewrite_config.legacy_env_first("model")
+    or "Qwen3-VL-8B-Instruct"
 )
-if REWRITE_MODEL == "Qwen3-VL-8B-Instruct":
-    REWRITE_MODEL = _rewrite_config.first_defined(
-        _rewrite_config.resolve_profile_value(_ACTIVE_REWRITE_PROFILE, "model"),
-        os.getenv("REWRITE_MODEL"),
-        _rewrite_config.legacy_env_first("model"),
-        "Qwen3-VL-8B-Instruct",
-    ) or "Qwen3-VL-8B-Instruct"
-REWRITE_PROVIDER_ID = _rewrite_config.resolve_provider_id(
-    _ACTIVE_REWRITE_PROFILE,
-)
-_REWRITE_API_KEY_INFO = _rewrite_config.resolve_api_key(
-    _ACTIVE_REWRITE_PROFILE,
-    provider_id=REWRITE_PROVIDER_ID,
-)
-REWRITE_API_KEY    = str(_REWRITE_API_KEY_INFO.get("value") or "")
-REWRITE_AUTH_MODE  = _resolve_profile_or_env(
-    _ACTIVE_REWRITE_PROFILE,
-    "auth_mode",
-    "REWRITE_AUTH_MODE",
-    default="bearer",
-).strip().lower()
-REWRITE_AUTH_HEADER = _resolve_profile_or_env(
-    _ACTIVE_REWRITE_PROFILE,
-    "auth_header",
-    "REWRITE_AUTH_HEADER",
-    default="",
-)
-_ENV_EXTRA_HEADERS = _parse_json_dict(_env_first("REWRITE_EXTRA_HEADERS_JSON", default=""))
-_PROFILE_EXTRA_HEADERS = (
-    {
-        str(k): str(v)
-        for k, v in (_ACTIVE_REWRITE_PROFILE.get("extra_headers") or {}).items()
-    }
-    if isinstance(_ACTIVE_REWRITE_PROFILE, dict) and isinstance(_ACTIVE_REWRITE_PROFILE.get("extra_headers"), dict)
-    else {}
-)
-REWRITE_EXTRA_HEADERS = _merge_case_insensitive_headers(_ENV_EXTRA_HEADERS, _PROFILE_EXTRA_HEADERS)
-_ENV_EXTRA_BODY = _parse_json_object(_env_first("REWRITE_EXTRA_BODY_JSON", default=""))
-_PROFILE_EXTRA_BODY = (
-    dict(_ACTIVE_REWRITE_PROFILE.get("extra_body") or {})
-    if isinstance(_ACTIVE_REWRITE_PROFILE, dict) and isinstance(_ACTIVE_REWRITE_PROFILE.get("extra_body"), dict)
-    else {}
-)
-REWRITE_EXTRA_BODY = _merge_json_objects(_ENV_EXTRA_BODY, _PROFILE_EXTRA_BODY)
-REWRITE_TIMEOUT_S  = float(
-    _resolve_profile_or_env(_ACTIVE_REWRITE_PROFILE, "timeout_s", "REWRITE_TIMEOUT_S", default="120")
-)
-REWRITE_TEMPERATURE = float(
-    _resolve_profile_or_env(_ACTIVE_REWRITE_PROFILE, "temperature", "REWRITE_TEMPERATURE", default="0.7")
-)
+REWRITE_PROVIDER_ID = _rewrite_config.normalize_provider_id(os.getenv("REWRITE_PROVIDER_ID", ""))
+REWRITE_API_KEY     = os.getenv("REWRITE_API_KEY", "")
+_REWRITE_API_KEY_CANDIDATES = _rewrite_config.get_provider_env_api_key_candidates(REWRITE_PROVIDER_ID)
+REWRITE_AUTH_MODE   = (os.getenv("REWRITE_AUTH_MODE") or "bearer").strip().lower()
+REWRITE_AUTH_HEADER = os.getenv("REWRITE_AUTH_HEADER", "")
+REWRITE_EXTRA_HEADERS = _parse_json_dict(os.getenv("REWRITE_EXTRA_HEADERS_JSON", ""))
+REWRITE_EXTRA_BODY    = _parse_json_object(os.getenv("REWRITE_EXTRA_BODY_JSON", ""))
+REWRITE_TIMEOUT_S   = float(os.getenv("REWRITE_TIMEOUT_S") or "120")
+REWRITE_TEMPERATURE = float(os.getenv("REWRITE_TEMPERATURE") or "0.7")
 # Disable model thinking/reasoning mode by default to minimise latency and
 # token cost on short-text rewrite tasks.  Set REWRITE_DISABLE_THINKING=false
-# (or "disable_thinking": false in the profile) to re-enable.
+# in .env (or as an env var) to re-enable.
 REWRITE_DISABLE_THINKING: bool = (
-    _resolve_profile_or_env(
-        _ACTIVE_REWRITE_PROFILE,
-        "disable_thinking",
-        "REWRITE_DISABLE_THINKING",
-        default="true",
-    ).lower() not in {"false", "0", "no", "off"}
+    (os.getenv("REWRITE_DISABLE_THINKING") or "true").lower() not in {"false", "0", "no", "off"}
 )
 # Set REWRITE_DEBUG=1 to print raw model output and extraction trace to stderr.
 REWRITE_DEBUG: bool = os.getenv("REWRITE_DEBUG", "").lower() not in {"", "0", "false", "no", "off"}
@@ -645,21 +566,6 @@ def run_rewrite_ensemble(text: str) -> List[Dict[str, Any]]:
 # ─── Local rewrite model internals ───────────────────────────────────────────
 
 
-class _ForceFirstTokenProcessor:  # duck-typed LogitsProcessor — no base needed
-    def __init__(self, prompt_len: int, allowed_token_ids: List[int]) -> None:
-        self.prompt_len        = prompt_len
-        self.allowed_token_ids = sorted(set(allowed_token_ids))
-
-    def __call__(self, input_ids: "torch.LongTensor", scores: "torch.FloatTensor") -> "torch.FloatTensor":
-        if not self.allowed_token_ids:
-            return scores
-        if input_ids.shape[1] != self.prompt_len:
-            return scores
-        forced = torch.full_like(scores, float("-inf"))
-        forced[:, self.allowed_token_ids] = scores[:, self.allowed_token_ids]
-        return forced
-
-
 def _load_local_rewrite_model() -> tuple:
     with _REWRITE_LOCK:
         if REWRITE_MODEL_PATH in _REWRITE_CACHE:
@@ -682,7 +588,7 @@ def _load_local_rewrite_model() -> tuple:
                     model = AutoModelForVision2Seq.from_pretrained(
                         REWRITE_MODEL_PATH, dtype=dtype, low_cpu_mem_usage=True, trust_remote_code=True,
                     )
-                except Exception:
+                except (ImportError, AttributeError):
                     model = AutoModelForCausalLM.from_pretrained(
                         REWRITE_MODEL_PATH, dtype=dtype, low_cpu_mem_usage=True, trust_remote_code=True,
                     )
@@ -690,24 +596,6 @@ def _load_local_rewrite_model() -> tuple:
         model.to(DEVICE).eval()
         _REWRITE_CACHE[REWRITE_MODEL_PATH] = (processor, model)
         return _REWRITE_CACHE[REWRITE_MODEL_PATH]
-
-
-def _open_brace_token_ids(processor: Any) -> List[int]:
-    tokenizer  = processor.tokenizer
-    direct_ids = tokenizer.encode("{", add_special_tokens=False)
-    if len(direct_ids) == 1:
-        return [direct_ids[0]]
-
-    allowed: List[int] = []
-    vocab = tokenizer.get_vocab()
-    for token, token_id in vocab.items():
-        decoded = tokenizer.decode([token_id], skip_special_tokens=False)
-        if decoded == "{":
-            allowed.append(token_id)
-
-    if allowed:
-        return sorted(set(allowed))
-    raise RuntimeError("Could not determine a single-token encoding for '{' in local model tokenizer.")
 
 
 @torch.no_grad()
@@ -728,19 +616,14 @@ def _local_rewrite_generate(prompt: str, max_new_tokens: int = 1024, temperature
             text_in = processor.apply_chat_template(messages, **_chat_kwargs)
     else:
         text_in = processor.apply_chat_template(messages, **_chat_kwargs)
-    inputs   = processor(text=text_in, return_tensors="pt").to(DEVICE)
+    inputs    = processor(text=text_in, return_tensors="pt").to(DEVICE)
     prompt_len = inputs["input_ids"].shape[1]
-    from transformers.generation.logits_process import LogitsProcessorList  # lazy
-    logits_processor = LogitsProcessorList(
-        [_ForceFirstTokenProcessor(prompt_len, _open_brace_token_ids(processor))]
-    )
     out = model.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
         do_sample=True,
         temperature=temperature,
         top_p=0.9,
-        logits_processor=logits_processor,
     )
     # Decode only the newly generated tokens (everything after the prompt).
     new_token_ids = out[0, prompt_len:]
@@ -798,13 +681,11 @@ def _build_external_auth_headers() -> Dict[str, str]:
         return headers
 
     if not REWRITE_API_KEY:
-        api_key_candidates = _rewrite_config.format_env_var_list(
-            _REWRITE_API_KEY_INFO.get("candidates") or ["REWRITE_API_KEY"]
-        )
+        api_key_candidates = _rewrite_config.format_env_var_list(_REWRITE_API_KEY_CANDIDATES)
         warnings.warn(
             f"REWRITE_AUTH_MODE is '{REWRITE_AUTH_MODE}' but REWRITE_API_KEY is empty — "
             "no auth header will be sent. "
-            f"Set profile api_key or env ({api_key_candidates}), or switch auth_mode to 'none'.",
+            f"Set REWRITE_API_KEY in .env or env ({api_key_candidates}), or switch auth_mode to 'none'.",
             stacklevel=3,
         )
         return headers
@@ -905,7 +786,20 @@ def _rewrite_api_generate(prompt: str, max_new_tokens: int = 2048, temperature: 
 
     payload = _merge_json_objects(payload, REWRITE_EXTRA_BODY)
 
-    r = _requests.post(url, json=payload, headers=headers, timeout=REWRITE_TIMEOUT_S)
+    _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+    r = None
+    for _attempt in range(2):
+        try:
+            r = _requests.post(url, json=payload, headers=headers, timeout=REWRITE_TIMEOUT_S)
+        except _requests.exceptions.ConnectionError as _conn_err:
+            if _attempt == 0:
+                _log.warning("[rewrite] Connection error on attempt 1, retrying: %s", _conn_err)
+                continue
+            raise
+        if _attempt == 0 and r.status_code in _RETRYABLE_STATUS:
+            _log.warning("[rewrite] API returned %s on attempt 1, retrying.", r.status_code)
+            continue
+        break
     r.raise_for_status()
     data = r.json()
 

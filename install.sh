@@ -166,7 +166,38 @@ path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
 }
 
-# Ensures ~/.local/bin exists and tries to register it via ~/.bash_profile.
+# Pick the shell RC file that the user's interactive shells will actually source.
+#   zsh              → ~/.zshrc
+#   bash on macOS    → ~/.bash_profile  (Terminal.app opens login shells)
+#   bash on Linux    → ~/.bashrc        (most terminal emulators, non-login)
+#   fallback         → ~/.bash_profile
+detect_rc_file() {
+    local shell_name
+    shell_name="$(basename "${SHELL:-bash}")"
+    case "$shell_name" in
+        zsh)
+            echo "$HOME/.zshrc" ;;
+        bash)
+            if [[ "$OS" == "macos" ]]; then
+                echo "$HOME/.bash_profile"
+            elif [[ -f "$HOME/.bashrc" ]]; then
+                echo "$HOME/.bashrc"
+            else
+                echo "$HOME/.bash_profile"
+            fi
+            ;;
+        *)
+            if [[ -f "$HOME/.bashrc" ]]; then
+                echo "$HOME/.bashrc"
+            else
+                echo "$HOME/.bash_profile"
+            fi
+            ;;
+    esac
+}
+
+# Ensures ~/.local/bin exists, is in the live PATH, and is persisted to the
+# appropriate shell RC file.
 ensure_local_bin_on_path() {
     mkdir -p "$BIN_DIR"
     export PATH="$BIN_DIR:$PATH"
@@ -174,20 +205,25 @@ ensure_local_bin_on_path() {
 
     local marker='# Added by Trileaf installer'
     local line='export PATH="$HOME/.local/bin:$PATH"'
-    local target="$HOME/.bash_profile"
+    local target
+    target="$(detect_rc_file)"
 
-    if [[ -f "$target" ]] && [[ -r "$target" ]] && grep -qF '.local/bin' "$target" 2>/dev/null; then
-        PATH_PERSISTED=1
-        return 0
-    fi
+    # If ~/.local/bin is already present in any common RC file, nothing to do.
+    local rc
+    for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile"; do
+        if [[ -f "$rc" ]] && grep -qF '.local/bin' "$rc" 2>/dev/null; then
+            PATH_PERSISTED=1
+            return 0
+        fi
+    done
 
     if [[ ! -f "$target" ]] && ! touch "$target" 2>/dev/null; then
-        warn "Could not create ~/.bash_profile for CLI registration."
+        warn "Could not create $(basename "$target") for CLI registration."
         return 0
     fi
 
     if [[ ! -w "$target" ]]; then
-        warn "Could not update ~/.bash_profile for CLI registration."
+        warn "Could not update $(basename "$target") for CLI registration."
         return 0
     fi
 
@@ -195,7 +231,7 @@ ensure_local_bin_on_path() {
         info "Added ~/.local/bin to PATH in $(basename "$target")"
         PATH_PERSISTED=1
     else
-        warn "Could not update ~/.bash_profile for CLI registration."
+        warn "Could not update $(basename "$target") for CLI registration."
     fi
 }
 
@@ -294,11 +330,12 @@ ok "Linked: $TRILEAF_LINK"
 
 if ! path_has_dir "$ORIGINAL_PATH" "$BIN_DIR"; then
     if [[ "$PATH_PERSISTED" -eq 1 ]]; then
-        warn "$BIN_DIR is not in your current shell's PATH."
+        warn "$BIN_DIR not yet in your current shell's PATH."
         warn "Open a new terminal, or run now:  export PATH=\"\$HOME/.local/bin:\$PATH\""
     else
-        warn "~/.bash_profile could not be updated for CLI registration."
-        warn "Add it manually before using trileaf:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+        warn "Could not update your shell RC file automatically."
+        warn "Add this line to your shell config, then open a new terminal:"
+        warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
 fi
 
@@ -323,7 +360,6 @@ elif [[ "$PATH_PERSISTED" -eq 1 ]]; then
     echo -e "    ${GREEN}trileaf setup${NC}    # configure models and providers"
     echo -e "    ${GREEN}trileaf run${NC}      # start the dashboard"
 else
-    echo "  ~/.bash_profile CLI registration did not complete."
     echo "  Add ~/.local/bin to PATH, then run:"
     echo -e "    ${GREEN}export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
     echo -e "    ${GREEN}trileaf setup${NC}    # configure models and providers"

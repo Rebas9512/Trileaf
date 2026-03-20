@@ -50,8 +50,8 @@ def _cmd_run(args: argparse.Namespace) -> None:
     import run as _run
 
     argv: list[str] = []
-    if args.profile:
-        argv += ["--rewrite-profile", args.profile]
+    if getattr(args, "leafhub_alias", None):
+        argv += ["--leafhub-alias", args.leafhub_alias]
     if args.reload:
         argv.append("--reload")
     _run.main(argv)
@@ -67,11 +67,13 @@ def _cmd_onboard(args: argparse.Namespace) -> None:
     raise SystemExit(onboarding.main(argv))
 
 
-def _cmd_config(_args: argparse.Namespace) -> None:
+def _cmd_config(args: argparse.Namespace) -> None:
     """Open the interactive provider configuration wizard."""
     from scripts import rewrite_provider_cli
 
-    raise SystemExit(rewrite_provider_cli.main(["wizard"]))
+    # Support 'trileaf config show' and 'trileaf config clear' sub-verbs
+    sub = getattr(args, "config_sub", None) or "wizard"
+    raise SystemExit(rewrite_provider_cli.main([sub]))
 
 
 def _cmd_doctor(_args: argparse.Namespace) -> None:
@@ -268,17 +270,16 @@ def _collect_managed_model_dirs(project_root: Path) -> list[Path]:
         paths.append(app_config.resolve_model_path("desklib"))
         paths.append(app_config.resolve_model_path("mpnet"))
 
-        store = rewrite_config.load_store()
-        profiles = store.get("profiles") if isinstance(store, dict) else {}
-        if isinstance(profiles, dict):
-            for profile in profiles.values():
-                if not isinstance(profile, dict):
-                    continue
-                backend = str(profile.get("backend") or "").strip().lower()
-                if backend != "local":
-                    continue
-                raw_path = profile.get("model_path") or "./models/Qwen3-VL-8B-Instruct"
-                paths.append(_resolve_from_project(project_root, raw_path))
+        # Local rewrite model path from .env (if configured)
+        raw_path = (
+            rewrite_config._read_dot_env_key(rewrite_config.ENV_FILE, "REWRITE_MODEL_PATH")
+            or rewrite_config.legacy_env_first("model_path")
+            or ""
+        )
+        if raw_path:
+            paths.append(_resolve_from_project(project_root, raw_path))
+        else:
+            paths.append(project_root / "models" / "Qwen3-VL-8B-Instruct")
     except Exception:
         paths.extend(
             [
@@ -311,7 +312,7 @@ def _collect_generated_project_paths(project_root: Path) -> list[Path]:
         project_root / "build",
         project_root / ".pytest_cache",
         project_root / "trileaf.egg-info",
-        project_root / ".rewrite_profiles.local.json",
+        project_root / ".env",
         project_root / "__pycache__",
         project_root / "api" / "__pycache__",
         project_root / "scripts" / "__pycache__",
@@ -716,9 +717,9 @@ def main(argv: list[str] | None = None) -> None:
             "Examples:\n"
             "  trileaf setup              # first-time setup (models + provider)\n"
             "  trileaf run                # start the dashboard\n"
-            "  trileaf run --profile gpt  # use a specific provider profile\n"
             "  trileaf stop               # stop the server and release GPU memory\n"
-            "  trileaf config             # manage provider profiles\n"
+            "  trileaf config             # configure rewrite provider (.env)\n"
+            "  trileaf config show        # show current .env config\n"
             "  trileaf weight             # show current Pareto weights\n"
             "  trileaf weight --ai 0.5 --sem 0.45 --risk 0.05  # update weights\n"
             "  trileaf update             # pull latest version and refresh packages\n"
@@ -732,8 +733,8 @@ def main(argv: list[str] | None = None) -> None:
     # trileaf run
     p_run = sub.add_parser("run", help="Start the Trileaf dashboard server")
     p_run.add_argument(
-        "--profile", default="", metavar="NAME",
-        help="Use a specific rewrite provider profile for this session",
+        "--leafhub-alias", default="", metavar="ALIAS",
+        help="LeafHub alias to use for the rewrite API key (overrides LEAFHUB_ALIAS in .env)",
     )
     p_run.add_argument(
         "--reload", action="store_true",
@@ -761,8 +762,13 @@ def main(argv: list[str] | None = None) -> None:
     # trileaf stop
     sub.add_parser("stop", help="Stop a running Trileaf server and release GPU memory")
 
-    # trileaf config
-    sub.add_parser("config", help="Add or edit rewrite provider profiles")
+    # trileaf config [show|clear]
+    p_cfg = sub.add_parser("config", help="Configure rewrite provider (.env)")
+    p_cfg.add_argument(
+        "config_sub", nargs="?", default="wizard",
+        choices=["wizard", "show", "clear"],
+        help="wizard (default) | show current config | clear rewrite keys",
+    )
 
     # trileaf doctor
     sub.add_parser("doctor", help="Check that all models and config are in place")

@@ -231,9 +231,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Open the guided rewrite-provider setup, save config, and exit.",
     )
     parser.add_argument(
-        "--rewrite-profile",
+        "--leafhub-alias",
         default="",
-        help="Temporarily use a specific local rewrite profile for this run.",
+        help="LeafHub alias to use for the rewrite API key (overrides LEAFHUB_ALIAS in .env).",
     )
     parser.add_argument(
         "--onboard",
@@ -253,39 +253,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _apply_rewrite_profile(profile_name: str = "") -> None:
+def _load_rewrite_credentials() -> None:
+    """
+    Resolve rewrite provider credentials and inject into os.environ.
+
+    Resolution order:
+      1. .env file (PROJECT_ROOT/.env) — non-secret config + LEAFHUB_ALIAS
+      2. LeafHub probe (.leafhub dotfile) — API key, optionally base_url/model
+      3. Existing os.environ — provider-specific key fallbacks
+
+    Must be called before models_runtime is imported.
+    """
     from scripts import rewrite_config
 
-    selected = rewrite_config.load_selected_profile(profile_name or None)
-    if selected is None:
-        if profile_name:
-            raise SystemExit(f"[run] Unknown rewrite profile: {profile_name}")
-        return
-
-    name = str(selected["name"])
-    profile = selected["profile"]
-    os.environ["REWRITE_PROFILE"] = name
-    backend = str(profile.get("backend") or "local")
-    print(f"[run] Rewrite profile: {name} ({backend})")
+    result = rewrite_config.resolve_credentials()
+    backend = os.getenv("REWRITE_BACKEND", "local")
+    cred = result.get("credential_source", "none")
+    print(f"[run] Rewrite backend: {backend}  credentials: {cred}")
 
 
 def _rewrite_backend_is_external() -> bool:
-    """Return True if the active rewrite profile (or env) uses an external API."""
+    """Return True if the configured rewrite backend uses an external API."""
     from scripts import rewrite_config
-
-    selected = rewrite_config.load_selected_profile()
-    if isinstance(selected, dict):
-        profile = selected.get("profile") or {}
-        backend = str(profile.get("backend") or "").strip().lower()
-        if backend in {"external", "openai_api"}:
-            return True
-    raw = rewrite_config.first_defined(
-        os.getenv("REWRITE_BACKEND"),
-        rewrite_config.legacy_env_first("backend"),
-        "local",
-    ) or "local"
-    raw = raw.strip().lower()
-    return raw in {"external", "openai_api"}
+    return rewrite_config.rewrite_backend_is_external()
 
 
 def main(argv: list[str] | None = None):
@@ -323,7 +313,9 @@ def main(argv: list[str] | None = None):
         if exit_code:
             raise SystemExit(exit_code)
 
-    _apply_rewrite_profile(args.rewrite_profile)
+    if args.leafhub_alias:
+        os.environ["LEAFHUB_ALIAS"] = args.leafhub_alias
+    _load_rewrite_credentials()
 
     if args.configure_only:
         return

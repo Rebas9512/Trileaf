@@ -254,49 +254,55 @@ def step_detection_models() -> bool:
 
 # ── Step 3: rewrite provider ──────────────────────────────────────────────────
 
-def _active_profile_summary() -> Optional[str]:
+def _dot_env_summary() -> Optional[str]:
+    """Return a one-line summary of the current .env config, or None."""
     try:
         from scripts import rewrite_config as rc
 
-        selected = rc.load_selected_profile()
-        if selected is None:
+        backend = rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_BACKEND") or ""
+        if not backend:
             return None
-        return rc.profile_summary(str(selected["name"]), selected["profile"])
+        if backend == "local":
+            model_path = rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_MODEL_PATH") or "./models/Qwen3-VL-8B-Instruct"
+            return f"local → {model_path}"
+        model = rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_MODEL") or "(unset)"
+        base_url = rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_BASE_URL") or "(unset)"
+        alias = rc._read_dot_env_key(rc.ENV_FILE, "LEAFHUB_ALIAS")
+        if alias:
+            return f"external via LeafHub alias='{alias}'  model={model}  url={base_url}"
+        has_key = bool(rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_API_KEY"))
+        return f"external  model={model}  url={base_url}  key={'set' if has_key else '(missing)'}"
     except Exception:
         return None
 
 
-def _external_profile_is_complete() -> bool:
-    """True when the active profile is external AND has base_url + model."""
+def _dot_env_is_complete() -> bool:
+    """True when .env has a complete external or local config."""
     try:
         from scripts import rewrite_config as rc
 
-        selected = rc.load_selected_profile()
-        if selected is None:
-            return False
-        profile = selected.get("profile") or {}
-        backend = str(profile.get("backend") or "local").strip().lower()
+        backend = rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_BACKEND") or ""
+        if backend == "local":
+            # Verify the recorded model path actually exists on disk.
+            raw_path = rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_MODEL_PATH") or ""
+            if not raw_path:
+                return True  # path not stored yet; let step_rewrite_provider re-check
+            p = Path(raw_path)
+            if not p.is_absolute():
+                p = (PROJECT_ROOT / p).resolve()
+            return _model_dir_ok(p)
         if backend not in ("external", "openai_api"):
             return False
-        return bool(
-            str(profile.get("base_url") or "").strip()
-            and str(profile.get("model") or "").strip()
+        has_url = bool(rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_BASE_URL"))
+        has_model = bool(rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_MODEL"))
+        # Key comes from LeafHub or directly from .env
+        has_key = bool(
+            rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_API_KEY")
+            or rc._read_dot_env_key(rc.ENV_FILE, "LEAFHUB_ALIAS")
         )
+        return has_url and has_model and has_key
     except Exception:
         return False
-
-
-def _set_local_rewrite_active() -> None:
-    try:
-        from scripts import rewrite_config as rc
-
-        store = rc.load_store()
-        if store.get("active_profile") != rc.DEFAULT_LOCAL_PROFILE:
-            rc.set_active_profile(store, rc.DEFAULT_LOCAL_PROFILE)
-            rc.save_store(store)
-            print(f"  Active profile set to: {rc.DEFAULT_LOCAL_PROFILE}")
-    except Exception as exc:
-        print(f"  [WARN] Could not update active profile: {exc}")
 
 
 def _download_local_rewrite_model(output_dir: Path) -> bool:
@@ -327,51 +333,207 @@ def _download_local_rewrite_model(output_dir: Path) -> bool:
         return False
 
 
+_LH_INSTALL_URL = "https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.sh"
+
+
+def _leafhub_fallback(reason: str) -> bool:
+    """
+    Called when LeafHub setup fails mid-wizard.
+
+    Prints the failure reason, then falls back to the interactive .env external
+    wizard (or skips it in --yes mode). Returns True if fallback succeeds.
+    """
+    print()
+    print("  [!] LeafHub setup could not complete:")
+    for line in reason.splitlines():
+        print(f"      {line}")
+    _lh_hint = (
+        "If you just installed LeafHub, open a new terminal first so the CLI\n"
+        "  is on your PATH, then re-run:  trileaf onboard"
+    )
+    print()
+    print(f"  Hint: {_lh_hint}")
+    print()
+    print("  Falling back to local .env credential storage.")
+    print("  [!] The API key will be stored in plain text (chmod 600, git-ignored).")
+    print()
+
+    if _YES_ALL:
+        print("  [--yes mode] Skipping interactive provider wizard.")
+        print("  Configure the rewrite provider later with:  trileaf config")
+        return True
+
+    print("  Launching the .env provider wizard…")
+    print()
+    try:
+        from scripts import rewrite_provider_cli
+        exit_code = rewrite_provider_cli.main(["wizard"])
+        return exit_code in (None, 0)
+    except SystemExit as exc:
+        return exc.code in (None, 0)
+    except Exception as exc:
+        print(f"  [ERROR] .env wizard also failed: {exc}")
+        print("  Configure the rewrite provider later with:  trileaf config")
+        return False
+
+
 def step_rewrite_provider() -> bool:
     _header("Step 3 / 4  —  Rewrite provider")
 
-    summary = _active_profile_summary()
+    from scripts import rewrite_config as rc
+
+    # ── Show current .env config if it exists ────────────────────────────
+    summary = _dot_env_summary()
     if summary:
-        print(f"  Current config: {summary}")
+        print(f"  Current config (.env): {summary}")
         print()
 
-    if _external_profile_is_complete():
+    if _dot_env_is_complete():
         if _prompt_yn(
-            "  External provider already configured. Keep this configuration?",
+            "  Provider already configured. Keep this configuration?",
             default=True,
         ):
             print("  Keeping existing configuration.")
             return True
 
+    # ── Check for LeafHub ────────────────────────────────────────────────
+    try:
+        from leafhub.probe import detect as _lh_detect
+        _lh_found = _lh_detect(project_dir=PROJECT_ROOT)
+    except ImportError:
+        _lh_found = None
+    except Exception as _det_exc:
+        # detect() should never raise, but guard against unexpected errors
+        # (corrupted dotfile, permission denied, etc.) and treat as absent.
+        _lh_found = None
+        import logging as _logging
+        _logging.getLogger(__name__).debug("LeafHub detect() error: %s", _det_exc)
+
+    lh_available = _lh_found is not None and (_lh_found.ready or _lh_found.can_link)
+    lh_linked    = _lh_found is not None and _lh_found.ready
+
+    # ── Upfront credential-manager question (only when LeafHub not present) ──
+    # When LeafHub is already installed or linked, the existing menu below
+    # already surfaces it as an option — no extra prompt needed.
+    if not lh_available and not _YES_ALL:
+        print()
+        print("  How would you like to manage your API credentials?")
+        print()
+        print("    1. LeafHub  (recommended)")
+        print("       Keys stored in an AES-256-GCM encrypted local vault.")
+        print("       Never written to .env or shell history.")
+        print(f"       https://github.com/Rebas9512/Leafhub")
+        print()
+        print("    2. Local .env file")
+        print("       API key stored in plain text (chmod 600, git-ignored).")
+        print("       Simpler setup — suitable for personal machines.")
+        print()
+        mgr = _prompt_choice(
+            "Credential storage",
+            [("leafhub", "LeafHub — encrypted vault"), ("dotenv", "Local .env file")],
+        )
+        if mgr == "leafhub":
+            print()
+            print("  Install LeafHub, then re-run  trileaf onboard.")
+            print()
+            print("  macOS / Linux / WSL:")
+            print(f"    curl -fsSL {_LH_INSTALL_URL} | bash")
+            print()
+            print("  Windows (PowerShell):")
+            print("    irm https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.ps1 | iex")
+            print()
+            print("  After the installer completes, open a new terminal and run:")
+            print("    trileaf onboard")
+            print()
+            return False
+        else:
+            # User chose local .env — show security note and continue.
+            print()
+            print("  [!] Security note: the API key will be stored in plain text in")
+            print("      PROJECT_ROOT/.env (chmod 600).  Anyone with read access to")
+            print("      this directory can read it.  Use LeafHub on shared machines.")
+            print()
+
     print()
-    print("  Choose how the rewrite pipeline should generate candidates:")
+    print("  Choose how the rewrite pipeline should obtain credentials:")
     print()
-    options: list[tuple[str, str]] = [
-        (
-            "external",
-            "External API  (OpenAI-compatible endpoint — quick setup, no local GPU needed)",
-        ),
-        (
-            "local",
-            "Local Qwen3-VL-8B  (fully offline — recommended if you have ≥16 GB VRAM)",
-        ),
+    options: list[tuple[str, str]] = []
+    if lh_linked:
+        options.append(("leafhub", f"LeafHub  (already linked as '{_lh_found.project_name}')"))
+    elif lh_available:
+        options.append(("leafhub", f"LeafHub  (server at {_lh_found.manage_url} — link this directory first)"))
+    options += [
+        ("external", "External API  (OpenAI-compatible — store key in .env)"),
+        ("local",    "Local Qwen3-VL-8B  (offline — requires ≥16 GB VRAM)"),
     ]
     choice = _prompt_choice("Select option", options)
 
-    # ── External API path ─────────────────────────────────────────────────
+    # ── LeafHub path ──────────────────────────────────────────────────────
+    if choice == "leafhub":
+        if not lh_linked:
+            print()
+            print("  This directory is not yet linked to a LeafHub project.")
+            if _YES_ALL:
+                proj_name = "trileaf"
+                print(f"  Project name: {proj_name} (auto)")
+            else:
+                proj_name = input("  Project name to create [trileaf]: ").strip() or "trileaf"
+            print()
+            try:
+                from leafhub.probe import register as _lh_register
+                _lh_found = _lh_register(proj_name, project_dir=PROJECT_ROOT, probe=_lh_found)
+                print(f"  [OK] Project '{proj_name}' created and linked.")
+            except Exception as _exc:
+                return _leafhub_fallback(str(_exc))
+
+        print()
+        if _YES_ALL:
+            alias    = "rewrite"
+            base_url = ""
+            model    = ""
+            print(f"  LeafHub alias: {alias} (auto)")
+            print()
+        else:
+            try:
+                alias    = input("  LeafHub key alias (name of the key stored in LeafHub) [rewrite]: ").strip() or "rewrite"
+                print()
+                # base_url and model are optional — LeafHub provides them at runtime via get_config()
+                base_url = input("  Provider base URL (e.g. https://api.openai.com/v1): ").strip()
+                model    = input("  Model name (e.g. gpt-4o): ").strip()
+            except EOFError:
+                alias, base_url, model = "rewrite", "", ""
+
+        try:
+            env_values: dict[str, str] = {
+                "LEAFHUB_ALIAS":    alias,
+                "REWRITE_BACKEND":  "external",
+            }
+            if base_url:
+                env_values["REWRITE_BASE_URL"] = base_url
+            if model:
+                env_values["REWRITE_MODEL"] = model
+
+            rc.write_dot_env(
+                env_values,
+                header="Trileaf rewrite provider — credentials managed by LeafHub",
+            )
+        except Exception as _write_exc:
+            return _leafhub_fallback(f"Failed to write .env: {_write_exc}")
+
+        print(f"  [OK] Wrote .env  (alias={alias})")
+        print(f"  API key will be fetched from LeafHub at runtime.")
+        return True
+
+    # ── External API path (key stored in .env) ────────────────────────────
     if choice == "external":
         if _YES_ALL:
             print()
             print("  [--yes mode] Skipping interactive provider wizard.")
-            print("  Configure the rewrite provider later with:")
-            print("    trileaf config")
+            print("  Configure the rewrite provider later with:  trileaf config")
             return True
 
         print()
-        print("  Launching the rewrite-provider setup wizard…")
-        print(
-            "  Follow the prompts to register your API endpoint, model, and key."
-        )
+        print("  Launching the provider setup wizard…")
         print()
         try:
             from scripts import rewrite_provider_cli
@@ -388,24 +550,15 @@ def step_rewrite_provider() -> bool:
             print(f"  [ERROR] Wizard failed: {exc}")
             return False
 
-        if not _external_profile_is_complete():
+        if not _dot_env_is_complete():
             print()
-            print(
-                "  [WARN] External provider does not appear to be fully configured."
-            )
-            print(
-                "  You can re-run the setup at any time with:  trileaf config"
-            )
+            print("  [WARN] Provider does not appear to be fully configured.")
+            print("  Re-run at any time with:  trileaf config")
         return True
 
     # ── Local rewrite-model path ──────────────────────────────────────────
-    from scripts import rewrite_config as rc
-
     _raw_rewrite_path = (
-        rc.resolve_profile_value(
-            (rc.load_selected_profile() or {}).get("profile"),
-            "model_path",
-        )
+        rc._read_dot_env_key(rc.ENV_FILE, "REWRITE_MODEL_PATH")
         or rc.legacy_env_first("model_path")
         or os.getenv("REWRITE_MODEL_PATH", "")
         or "./models/Qwen3-VL-8B-Instruct"
@@ -413,10 +566,11 @@ def step_rewrite_provider() -> bool:
     local_model_path = Path(_raw_rewrite_path)
     if not local_model_path.is_absolute():
         local_model_path = (PROJECT_ROOT / local_model_path).resolve()
+
     if _model_dir_ok(local_model_path):
         print()
         print(f"  [OK] Local rewrite model found at: {local_model_path}")
-        _set_local_rewrite_active()
+        rc.write_dot_env({"REWRITE_BACKEND": "local", "REWRITE_MODEL_PATH": str(local_model_path)})
         return True
 
     print()
@@ -439,7 +593,7 @@ def step_rewrite_provider() -> bool:
     if not _download_local_rewrite_model(local_model_path):
         return False
 
-    _set_local_rewrite_active()
+    rc.write_dot_env({"REWRITE_BACKEND": "local", "REWRITE_MODEL_PATH": str(local_model_path)})
     return True
 
 

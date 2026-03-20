@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "trileaf"
 version = "0.2.0"
 description = "AI writing humaniser — Pareto-selection ensemble rewrite pipeline"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0,<1.0.0",
@@ -24,6 +25,13 @@ dependencies = [
 
 [project.scripts]
 trileaf = "trileaf_cli:main"
+
+[project.optional-dependencies]
+# LeafHub is optional — Trileaf works without it (manual .env key entry).
+# Install with:  pip install "trileaf[leafhub]"
+leafhub = [
+    "leafhub @ git+https://github.com/Rebas9512/Leafhub.git",
+]
 
 [project.urls]
 Homepage = "https://github.com/Rebas9512/Trileaf"

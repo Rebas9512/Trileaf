@@ -1,9 +1,14 @@
 """
-Local rewrite-provider profile storage and env injection helpers.
+Credential resolution for the Trileaf rewrite provider.
 
-Profiles are stored in a local JSON file that is ignored by git. The active
-profile can be applied to process environment variables before runtime modules
-read their settings.
+Resolution order (first non-empty API key wins):
+  1. LeafHub  — .leafhub dotfile in project root → hub.get_key(LEAFHUB_ALIAS)
+  2. .env     — PROJECT_ROOT/.env loaded into os.environ
+  3. env vars — REWRITE_API_KEY / provider-specific vars already in process
+
+For initial setup run:  trileaf config
+This writes a .env file in the project root.  The file is chmod 600 and
+listed in .gitignore — never commit it.
 """
 
 from __future__ import annotations
@@ -18,222 +23,44 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Matches unresolved full-value placeholders like ${MY_VAR} or $MY_VAR.
-# This follows the OpenClaw pattern of rejecting obvious unresolved references
-# without treating arbitrary strings containing '$' as invalid credentials.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE = PROJECT_ROOT / ".env"
+
+# Matches full-value env-var placeholders like ${MY_VAR} or $MY_VAR.
 _ENV_VAR_RE = re.compile(r"^(?:\$\{[A-Z_][A-Z0-9_]*\}|\$[A-Z_][A-Z0-9_]*)$")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-# User-level config dir — kept outside the repo so credentials are never
-# accidentally packaged or shared. Mirrors the ~/.openclaw pattern.
-USER_CONFIG_DIR = Path.home() / ".trileaf"
-CONFIG_PATH = USER_CONFIG_DIR / "rewrite_profiles.json"
-
-# Legacy paths — migrated automatically on first load.
-# 1. Project-root JSON (early dev artefact).
-_LEGACY_CONFIG_PATH = PROJECT_ROOT / ".rewrite_profiles.local.json"
-# 2. Old user-config dir used before the project was renamed to "trileaf".
-_LEGACY_USER_CONFIG_PATH = Path.home() / ".llm-writing-optimizer" / "rewrite_profiles.json"
-
-STORE_VERSION = 1
-DEFAULT_LOCAL_PROFILE = "local-rewrite"
-LEGACY_LOCAL_PROFILE = "local-qwen"
-
-# OpenClaw-inspired provider env fallback candidates. The runtime uses the
-# profile first, then generic rewrite env vars, then provider-specific env vars.
+# Provider-specific env var candidates (checked after REWRITE_API_KEY).
 _PROVIDER_ENV_API_KEY_CANDIDATES: Dict[str, tuple[str, ...]] = {
-    "anthropic": ("ANTHROPIC_API_KEY",),
-    "google": ("GEMINI_API_KEY",),
-    "groq": ("GROQ_API_KEY",),
-    "litellm": ("LITELLM_API_KEY",),
-    "minimax": ("MINIMAX_API_KEY",),
-    "moonshot": ("MOONSHOT_API_KEY",),
-    "mistral": ("MISTRAL_API_KEY",),
-    "nvidia": ("NVIDIA_API_KEY",),
-    "ollama": ("OLLAMA_API_KEY",),
-    "openai": ("OPENAI_API_KEY",),
-    "openrouter": ("OPENROUTER_API_KEY",),
-    "together": ("TOGETHER_API_KEY",),
-    "vllm": ("VLLM_API_KEY",),
-    "xai": ("XAI_API_KEY",),
+    "anthropic":      ("ANTHROPIC_API_KEY",),
+    "google":         ("GEMINI_API_KEY",),
+    "groq":           ("GROQ_API_KEY",),
+    "litellm":        ("LITELLM_API_KEY",),
+    "minimax":        ("MINIMAX_API_KEY",),
+    "moonshot":       ("MOONSHOT_API_KEY",),
+    "mistral":        ("MISTRAL_API_KEY",),
+    "nvidia":         ("NVIDIA_API_KEY",),
+    "ollama":         ("OLLAMA_API_KEY",),
+    "openai":         ("OPENAI_API_KEY",),
+    "openrouter":     ("OPENROUTER_API_KEY",),
+    "together":       ("TOGETHER_API_KEY",),
+    "vllm":           ("VLLM_API_KEY",),
+    "xai":            ("XAI_API_KEY",),
 }
 
 _PROVIDER_ENV_API_KEY_ALIASES: Dict[str, str] = {
     "custom-anthropic": "anthropic",
-    "custom-openai": "openai",
-    "minimax-cn": "minimax",
-}
-
-_LEGACY_ENV_ALIASES: Dict[str, tuple[str, ...]] = {
-    "backend": ("QWEN_BACKEND",),
-    "model_path": ("QWEN_MODEL_PATH",),
-    "base_url": ("QWEN_API_BASE_URL",),
-    "model": ("QWEN_API_MODEL",),
+    "custom-openai":    "openai",
+    "minimax-cn":       "minimax",
 }
 
 
-def _default_local_profile() -> Dict[str, Any]:
-    return {
-        "backend": "local",
-        "model_path": "./models/Qwen3-VL-8B-Instruct",
-        "label": "Local rewrite model (Qwen3-VL-8B-Instruct)",
-        # Disable thinking/reasoning mode by default to reduce latency and
-        # token cost on short-text rewrite tasks.
-        "disable_thinking": True,
-        "provider_id": DEFAULT_LOCAL_PROFILE,
-    }
+# ── Utility helpers ───────────────────────────────────────────────────────────
 
-
-def _default_store() -> Dict[str, Any]:
-    return {
-        "version": STORE_VERSION,
-        "active_profile": DEFAULT_LOCAL_PROFILE,
-        "profiles": {
-            DEFAULT_LOCAL_PROFILE: _default_local_profile(),
-        },
-    }
-
-
-def _migrate_legacy_store() -> None:
-    """Move a legacy profile store to the canonical user config dir on first run.
-
-    Checks two legacy locations in priority order:
-    1. Project-root ``.rewrite_profiles.local.json`` (early dev artefact).
-    2. ``~/.llm-writing-optimizer/rewrite_profiles.json`` (old user-config dir
-       used before the project was renamed to "trileaf").
-    """
-    if CONFIG_PATH.exists():
-        return
-
-    for legacy_path, remove_after in (
-        (_LEGACY_CONFIG_PATH, True),
-        (_LEGACY_USER_CONFIG_PATH, False),
-    ):
-        if not legacy_path.exists():
-            continue
-        try:
-            raw = json.loads(legacy_path.read_text(encoding="utf-8"))
-            normalized = _normalize_store(raw)
-            USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            CONFIG_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
-            try:
-                os.chmod(CONFIG_PATH, 0o600)
-            except OSError:
-                pass
-            if remove_after:
-                legacy_path.unlink(missing_ok=True)
-        except OSError:
-            pass  # Non-fatal; load_store will fall through to _default_store()
-        return  # Stop after the first successfully found legacy file
-
-
-def _normalize_store(data: Dict[str, Any]) -> Dict[str, Any]:
-    profiles = data.get("profiles")
-    if not isinstance(profiles, dict):
-        profiles = {}
-
-    legacy_profile = profiles.get(LEGACY_LOCAL_PROFILE)
-    default_profile = profiles.get(DEFAULT_LOCAL_PROFILE)
-    if isinstance(legacy_profile, dict):
-        migrated_profile = dict(legacy_profile)
-        if migrated_profile.get("provider_id") == LEGACY_LOCAL_PROFILE:
-            migrated_profile["provider_id"] = DEFAULT_LOCAL_PROFILE
-        if default_profile is None:
-            profiles[DEFAULT_LOCAL_PROFILE] = migrated_profile
-        del profiles[LEGACY_LOCAL_PROFILE]
-
-    if DEFAULT_LOCAL_PROFILE not in profiles:
-        profiles[DEFAULT_LOCAL_PROFILE] = _default_local_profile()
-    elif isinstance(profiles[DEFAULT_LOCAL_PROFILE], dict):
-        profiles[DEFAULT_LOCAL_PROFILE].setdefault("provider_id", DEFAULT_LOCAL_PROFILE)
-
-    active = data.get("active_profile") or DEFAULT_LOCAL_PROFILE
-    if active == LEGACY_LOCAL_PROFILE:
-        active = DEFAULT_LOCAL_PROFILE
-    if active not in profiles:
-        active = DEFAULT_LOCAL_PROFILE
-
-    return {
-        "version": STORE_VERSION,
-        "active_profile": active,
-        "profiles": profiles,
-    }
-
-
-def load_store() -> Dict[str, Any]:
-    _migrate_legacy_store()
-    if not CONFIG_PATH.exists():
-        return _default_store()
-
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _default_store()
-
-    if not isinstance(data, dict):
-        return _default_store()
-
-    return _normalize_store(data)
-
-
-def save_store(store: Dict[str, Any]) -> None:
-    payload = _normalize_store(store)
-    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-    try:
-        os.chmod(CONFIG_PATH, 0o600)
-    except OSError:
-        pass
-
-
-def get_profile(store: Dict[str, Any], name: str) -> Optional[Dict[str, Any]]:
-    if name == LEGACY_LOCAL_PROFILE:
-        name = DEFAULT_LOCAL_PROFILE
-    profiles = store.get("profiles") or {}
-    profile = profiles.get(name)
-    return profile if isinstance(profile, dict) else None
-
-
-def set_active_profile(store: Dict[str, Any], name: str) -> None:
-    if name == LEGACY_LOCAL_PROFILE:
-        name = DEFAULT_LOCAL_PROFILE
-    if name not in (store.get("profiles") or {}):
-        raise KeyError(f"Unknown profile: {name}")
-    store["active_profile"] = name
-
-
-def upsert_profile(store: Dict[str, Any], name: str, profile: Dict[str, Any]) -> None:
-    if name == LEGACY_LOCAL_PROFILE:
-        name = DEFAULT_LOCAL_PROFILE
-    if profile.get("provider_id") == LEGACY_LOCAL_PROFILE:
-        profile = {**profile, "provider_id": DEFAULT_LOCAL_PROFILE}
-    profiles = store.setdefault("profiles", {})
-    profiles[name] = profile
-    if not store.get("active_profile"):
-        store["active_profile"] = name
-
-
-def delete_profile(store: Dict[str, Any], name: str) -> None:
-    if name == DEFAULT_LOCAL_PROFILE:
-        raise ValueError("The built-in local profile cannot be deleted.")
-    profiles = store.get("profiles") or {}
-    profiles.pop(name, None)
-    if store.get("active_profile") == name:
-        store["active_profile"] = DEFAULT_LOCAL_PROFILE
-
-
-def resolve_profile_name(store: Dict[str, Any], explicit: str | None = None) -> str:
-    if explicit:
-        if explicit == LEGACY_LOCAL_PROFILE:
-            return DEFAULT_LOCAL_PROFILE
-        return explicit
-    env_name = os.getenv("REWRITE_PROFILE", "").strip()
-    if env_name:
-        if env_name == LEGACY_LOCAL_PROFILE:
-            return DEFAULT_LOCAL_PROFILE
-        return env_name
-    return str(store.get("active_profile") or DEFAULT_LOCAL_PROFILE)
+def normalize_provider_id(value: Any) -> str:
+    s = _trim_to_optional(value) or ""
+    if not s:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
 
 def _trim_to_optional(value: Any) -> Optional[str]:
@@ -243,22 +70,13 @@ def _trim_to_optional(value: Any) -> Optional[str]:
     return s or None
 
 
-def normalize_provider_id(value: Any) -> str:
-    s = _trim_to_optional(value) or ""
-    if not s:
-        return ""
-    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
-
-
 def _trim_credential(value: Any) -> Optional[str]:
-    """Return the string value, or None if it looks like an unresolved env-var placeholder."""
     s = _trim_to_optional(value)
     if s and _ENV_VAR_RE.fullmatch(s):
         import warnings
-
         warnings.warn(
-            f"Profile credential looks like an unresolved env-var placeholder: {s!r}. "
-            "Set the referenced env var or store the actual key value in the profile.",
+            f"Credential looks like an unresolved env-var placeholder: {s!r}. "
+            "Set the referenced env var or store the actual key value in .env.",
             stacklevel=4,
         )
         return None
@@ -290,183 +108,6 @@ def format_env_var_list(names: Sequence[str]) -> str:
     return ", ".join(ordered)
 
 
-def legacy_env_first(
-    alias_group: str,
-    *,
-    env: Mapping[str, str] | None = None,
-) -> Optional[str]:
-    env_map = os.environ if env is None else env
-    for env_name in _LEGACY_ENV_ALIASES.get(alias_group, ()):
-        value = _trim_to_optional(env_map.get(env_name))
-        if value:
-            return value
-    return None
-
-
-def load_selected_profile(profile_name: str | None = None) -> Optional[Dict[str, Any]]:
-    store = load_store()
-    name = resolve_profile_name(store, explicit=profile_name)
-    profile = get_profile(store, name)
-    if profile is None:
-        return None
-    return {
-        "name": name,
-        "profile": profile,
-        "store": store,
-    }
-
-
-def resolve_provider_id(
-    profile: Dict[str, Any] | None,
-    *,
-    env: Mapping[str, str] | None = None,
-) -> str:
-    env_map = os.environ if env is None else env
-    provider_id = first_defined(
-        resolve_profile_value(profile, "provider_id"),
-        _trim_to_optional(env_map.get("REWRITE_PROVIDER_ID")),
-    )
-    normalized = normalize_provider_id(provider_id)
-    if normalized:
-        return normalized
-
-    base_url = (first_defined(
-        resolve_profile_value(profile, "base_url"),
-        _trim_to_optional(env_map.get("REWRITE_BASE_URL")),
-        legacy_env_first("base_url", env=env_map),
-    ) or "").lower()
-    api_kind = (first_defined(
-        resolve_profile_value(profile, "api_kind"),
-        _trim_to_optional(env_map.get("REWRITE_API_KIND")),
-    ) or "").lower()
-
-    if "openrouter.ai" in base_url:
-        return "openrouter"
-    if "api.openai.com" in base_url:
-        return "openai"
-    if "api.anthropic.com" in base_url or api_kind == "anthropic-messages":
-        return "anthropic"
-    return ""
-
-
-def resolve_profile_value(
-    profile: Dict[str, Any] | None,
-    key: str,
-    *,
-    secret: bool = False,
-) -> Optional[str]:
-    if not profile:
-        return None
-    value = profile.get(key)
-    if secret:
-        return _trim_credential(value)
-    return _trim_to_optional(value)
-
-
-def resolve_api_key(
-    profile: Dict[str, Any] | None,
-    *,
-    provider_id: Any = None,
-    env: Mapping[str, str] | None = None,
-) -> Dict[str, Any]:
-    env_map = os.environ if env is None else env
-    normalized_provider = normalize_provider_id(provider_id) or resolve_provider_id(profile, env=env_map)
-    candidates = get_provider_env_api_key_candidates(normalized_provider)
-    profile_value = resolve_profile_value(profile, "api_key", secret=True)
-    if profile_value:
-        return {
-            "value": profile_value,
-            "source": "profile",
-            "env_name": None,
-            "provider_id": normalized_provider,
-            "candidates": candidates,
-        }
-
-    for env_name in candidates:
-        env_value = _trim_credential(env_map.get(env_name))
-        if env_value not in (None, ""):
-            return {
-                "value": env_value,
-                "source": f"env:{env_name}",
-                "env_name": env_name,
-                "provider_id": normalized_provider,
-                "candidates": candidates,
-            }
-
-    return {
-        "value": "",
-        "source": "",
-        "env_name": None,
-        "provider_id": normalized_provider,
-        "candidates": candidates,
-    }
-
-
-def _profile_to_env(profile: Dict[str, Any]) -> Dict[str, str]:
-    backend = str(profile.get("backend") or "local").strip().lower()
-    data: Dict[str, str] = {
-        "REWRITE_BACKEND": backend,
-        "REWRITE_PROVIDER_ID": normalize_provider_id(profile.get("provider_id")),
-    }
-
-    # disable_thinking applies to both local and external backends.
-    data["REWRITE_DISABLE_THINKING"] = (
-        "true" if profile.get("disable_thinking", True) else "false"
-    )
-
-    if backend == "local":
-        data["REWRITE_MODEL_PATH"] = str(
-            profile.get("model_path") or "./models/Qwen3-VL-8B-Instruct"
-        )
-        return data
-
-    extra_headers = profile.get("extra_headers") or {}
-    if not isinstance(extra_headers, dict):
-        extra_headers = {}
-    extra_body = profile.get("extra_body") or {}
-    if not isinstance(extra_body, dict):
-        extra_body = {}
-
-    data.update(
-        {
-            "REWRITE_API_KIND": str(profile.get("api_kind") or "openai-chat-completions"),
-            "REWRITE_BASE_URL": str(profile.get("base_url") or ""),
-            "REWRITE_MODEL": str(profile.get("model") or ""),
-            "REWRITE_API_KEY": _trim_credential(profile.get("api_key")) or "",
-            "REWRITE_AUTH_MODE": str(profile.get("auth_mode") or "bearer"),
-            "REWRITE_AUTH_HEADER": str(profile.get("auth_header") or ""),
-            "REWRITE_EXTRA_HEADERS_JSON": json.dumps(extra_headers, ensure_ascii=True),
-            "REWRITE_EXTRA_BODY_JSON": json.dumps(extra_body, ensure_ascii=True),
-            "REWRITE_TIMEOUT_S": str(profile.get("timeout_s") or 120),
-            "REWRITE_TEMPERATURE": str(profile.get("temperature") or 0.7),
-        }
-    )
-    return data
-
-
-def apply_active_profile_env(
-    *,
-    override: bool = True,
-    profile_name: str | None = None,
-) -> Optional[Dict[str, Any]]:
-    store = load_store()
-    name = resolve_profile_name(store, explicit=profile_name)
-    profile = get_profile(store, name)
-    if profile is None:
-        return None
-
-    env_values = _profile_to_env(profile)
-    for key, value in env_values.items():
-        if value in ("", None):
-            continue
-        if override or key not in os.environ:
-            os.environ[key] = value
-
-    if override or "REWRITE_PROFILE" not in os.environ:
-        os.environ["REWRITE_PROFILE"] = name
-    return {"name": name, "profile": profile}
-
-
 def mask_secret(value: str) -> str:
     if not value:
         return "(empty)"
@@ -475,26 +116,314 @@ def mask_secret(value: str) -> str:
     return f"{value[:4]}...{value[-4:]}"
 
 
-def profile_summary(name: str, profile: Dict[str, Any]) -> str:
-    backend = str(profile.get("backend") or "local")
-    if backend == "local":
-        model_path = str(profile.get("model_path") or "./models/Qwen3-VL-8B-Instruct")
-        return f"{name}: local -> {model_path}"
+# ── .env file handling ────────────────────────────────────────────────────────
 
-    api_kind = str(profile.get("api_kind") or "openai-chat-completions")
-    model = str(profile.get("model") or "(unset)")
-    base_url = str(profile.get("base_url") or "(unset)")
-    auth_mode = str(profile.get("auth_mode") or "bearer")
-    api_key = mask_secret(str(profile.get("api_key") or ""))
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    """Parse a single KEY=VALUE line. Returns (key, value) or None."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if "=" not in stripped:
+        return None
+    key, _, raw = stripped.partition("=")
+    key = key.strip()
+    if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+        return None
+    value = raw.strip()
+    # Strip surrounding quotes
+    if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+        value = value[1:-1]
+    else:
+        # Strip inline comment (only when preceded by whitespace)
+        for i, ch in enumerate(value):
+            if ch == "#" and i > 0 and value[i - 1].isspace():
+                value = value[:i].rstrip()
+                break
+    return key, value
+
+
+def load_dot_env(path: Path | None = None, *, override: bool = False) -> dict[str, str]:
+    """
+    Load KEY=VALUE pairs from a .env file into os.environ.
+
+    Args:
+        path:     Path to the .env file. Defaults to PROJECT_ROOT/.env.
+        override: If True, existing env vars are overwritten. Default False.
+
+    Returns:
+        Dict of keys loaded from the file (regardless of override).
+    """
+    env_path = path or ENV_FILE
+    if not env_path.is_file():
+        return {}
+    loaded: dict[str, str] = {}
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            result = _parse_env_line(line)
+            if result:
+                key, value = result
+                loaded[key] = value
+                if override or key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+    return loaded
+
+
+def write_dot_env(
+    values: dict[str, str],
+    path: Path | None = None,
+    *,
+    header: str = "",
+    merge: bool = True,
+) -> Path:
+    """
+    Write KEY=VALUE pairs to a .env file (chmod 600).
+
+    Args:
+        values: Mapping of env var names to values.
+        path:   Target path. Defaults to PROJECT_ROOT/.env.
+        header: Optional comment block written at the top.
+        merge:  If True and file exists, update matching keys in-place
+                (preserves unrelated keys and comments). Default True.
+    """
+    env_path = path or ENV_FILE
+
+    if merge and env_path.is_file():
+        _merge_dot_env(env_path, values)
+    else:
+        _write_dot_env_fresh(env_path, values, header=header)
+
+    try:
+        env_path.chmod(0o600)
+    except OSError:
+        pass
+    return env_path
+
+
+def _write_dot_env_fresh(path: Path, values: dict[str, str], *, header: str = "") -> None:
+    lines: list[str] = []
+    if header:
+        for c in header.splitlines():
+            lines.append(f"# {c}" if c.strip() else "#")
+        lines.append("")
+    for key, value in values.items():
+        lines.append(f"{key}={_quote_env_value(value)}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _merge_dot_env(path: Path, updates: dict[str, str]) -> None:
+    """Update specific keys in an existing .env file, preserving all other lines."""
+    try:
+        original = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        original = []
+
+    remaining = dict(updates)
+    out: list[str] = []
+    for line in original:
+        result = _parse_env_line(line)
+        if result and result[0] in remaining:
+            key = result[0]
+            out.append(f"{key}={_quote_env_value(remaining.pop(key))}")
+        else:
+            out.append(line)
+
+    # Append keys not found in the existing file
+    if remaining:
+        if out and out[-1].strip():
+            out.append("")
+        for key, value in remaining.items():
+            out.append(f"{key}={_quote_env_value(value)}")
+
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def _quote_env_value(value: str) -> str:
+    if not value:
+        return ""
+    if " " in value or "#" in value or value[0] in ('"', "'"):
+        escaped = value.replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+# ── LeafHub probe integration ─────────────────────────────────────────────────
+
+def _get_leafhub_alias() -> str:
+    """Return the LeafHub alias to use for the rewrite API key."""
     return (
-        f"{name}: external [{api_kind}] model={model} base_url={base_url} "
-        f"auth={auth_mode} key={api_key}"
+        os.getenv("LEAFHUB_ALIAS")
+        or _read_dot_env_key(ENV_FILE, "LEAFHUB_ALIAS")
+        or "rewrite"
     )
 
 
+def _read_dot_env_key(path: Path, key: str) -> str | None:
+    """Fast single-key read from a .env file without touching os.environ."""
+    if not path.is_file():
+        return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            result = _parse_env_line(line)
+            if result and result[0] == key:
+                return result[1] or None
+    except OSError:
+        pass
+    return None
+
+
+def _try_leafhub(project_dir: Path | None = None) -> dict[str, str] | None:
+    """
+    Probe for a LeafHub-linked project and resolve the rewrite API key.
+
+    Returns a dict of REWRITE_* env var values to inject, or None if LeafHub
+    is not available or not linked.
+    """
+    try:
+        from leafhub.probe import detect
+    except ImportError:
+        return None
+
+    found = detect(project_dir=project_dir or PROJECT_ROOT)
+    if not found.ready:
+        return None
+
+    alias = _get_leafhub_alias()
+    try:
+        hub = found.open_sdk()
+        api_key = hub.get_key(alias)
+        if not api_key:
+            return None
+
+        result: dict[str, str] = {"REWRITE_API_KEY": api_key}
+
+        # Pull provider config from LeafHub (base_url, model, api_format, auth)
+        try:
+            cfg = hub.get_config(alias)
+            if getattr(cfg, "base_url", None):
+                result["REWRITE_BASE_URL"] = cfg.base_url
+            # ProviderConfig.model is the resolved model (override or default_model)
+            if getattr(cfg, "model", None):
+                result["_LEAFHUB_MODEL"] = cfg.model
+            # api_format maps to REWRITE_API_KIND (only fills if not already set)
+            if getattr(cfg, "api_format", None):
+                result["_LEAFHUB_API_KIND"] = cfg.api_format
+            # auth_mode / auth_header (only fill if not already set)
+            if getattr(cfg, "auth_mode", None):
+                result["_LEAFHUB_AUTH_MODE"] = cfg.auth_mode
+            if getattr(cfg, "auth_header", None):
+                result["_LEAFHUB_AUTH_HEADER"] = cfg.auth_header
+        except Exception as _cfg_exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "LeafHub get_config(%r) failed: %s: %s",
+                alias, type(_cfg_exc).__name__, _cfg_exc,
+            )
+
+        return result
+    except Exception as _exc:
+        _exc_name = type(_exc).__name__
+        if "InvalidToken" in _exc_name or "token" in str(_exc).lower():
+            import sys
+            print(
+                "\n[!] LeafHub: token in .leafhub is invalid or expired.\n"
+                "    Re-link with:  trileaf config\n",
+                file=sys.stderr,
+            )
+        return None
+
+
+# ── Unified credential resolution ─────────────────────────────────────────────
+
+def resolve_credentials(project_dir: Path | None = None) -> dict[str, Any]:
+    """
+    Resolve rewrite provider credentials and inject into os.environ.
+
+    Resolution order:
+      1. .env file (PROJECT_ROOT/.env) — loads all non-secret config first
+      2. LeafHub probe — if .leafhub found and ready, overrides REWRITE_API_KEY
+      3. Existing os.environ — provider-specific key fallback (e.g. OPENAI_API_KEY)
+
+    Returns a summary dict with "source" and "credential_source" keys.
+    """
+    # Step 1: load .env (non-overriding — process env takes priority)
+    dot_env = load_dot_env(override=False)
+
+    # Step 2: try LeafHub for the API key
+    leafhub = _try_leafhub(project_dir)
+    if leafhub:
+        for key, value in leafhub.items():
+            if not key.startswith("_") and value:
+                os.environ[key] = value          # LeafHub API key always wins
+        # Fill optional settings from LeafHub only when not already in env
+        for lh_key, env_key in (
+            ("_LEAFHUB_MODEL",       "REWRITE_MODEL"),
+            ("_LEAFHUB_API_KIND",    "REWRITE_API_KIND"),
+            ("_LEAFHUB_AUTH_MODE",   "REWRITE_AUTH_MODE"),
+            ("_LEAFHUB_AUTH_HEADER", "REWRITE_AUTH_HEADER"),
+        ):
+            lh_val = leafhub.get(lh_key, "")
+            if lh_val and not os.getenv(env_key):
+                os.environ[env_key] = lh_val
+        credential_source = "leafhub"
+    elif os.getenv("REWRITE_API_KEY"):
+        credential_source = "dotenv" if "REWRITE_API_KEY" in dot_env else "env"
+    else:
+        # Step 3: try provider-specific fallback env vars
+        provider_id = os.getenv("REWRITE_PROVIDER_ID", "")
+        candidates = get_provider_env_api_key_candidates(provider_id)
+        credential_source = "none"
+        for env_name in candidates[1:]:          # skip REWRITE_API_KEY (already checked)
+            val = _trim_credential(os.getenv(env_name))
+            if val:
+                os.environ["REWRITE_API_KEY"] = val
+                credential_source = f"env:{env_name}"
+                break
+
+    # Ensure backend default
+    os.environ.setdefault("REWRITE_BACKEND", "local")
+
+    return {
+        "source":            "leafhub" if leafhub else ("dotenv" if dot_env else "env"),
+        "credential_source": credential_source,
+        "dot_env_loaded":    bool(dot_env),
+        "leafhub_active":    leafhub is not None,
+    }
+
+
+def rewrite_backend_is_external() -> bool:
+    """Return True if the configured rewrite backend is an external API."""
+    raw = os.getenv("REWRITE_BACKEND", "local").strip().lower()
+    return raw in {"external", "openai_api", "api", "remote"}
+
+
+# ── Legacy env shim (kept for any remaining callers) ──────────────────────────
+
+def legacy_env_first(
+    alias_group: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Optional[str]:
+    """Read QWEN_* legacy env vars for backwards compatibility."""
+    _LEGACY = {
+        "backend":    ("QWEN_BACKEND",),
+        "model_path": ("QWEN_MODEL_PATH",),
+        "base_url":   ("QWEN_API_BASE_URL",),
+        "model":      ("QWEN_API_MODEL",),
+    }
+    env_map = os.environ if env is None else env
+    for env_name in _LEGACY.get(alias_group, ()):
+        value = _trim_to_optional(env_map.get(env_name))
+        if value:
+            return value
+    return None
+
+
+# ── CLI entry point (delegates to rewrite_provider_cli) ──────────────────────
+
 def main(argv: list[str] | None = None) -> int:
     from scripts import rewrite_provider_cli
-
     return rewrite_provider_cli.main(argv)
 
 
