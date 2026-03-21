@@ -92,7 +92,111 @@ source .venv/bin/activate   # macOS / Linux / WSL — once per terminal session
 trileaf run
 ```
 
-### After install — start the dashboard
+### Onboarding
+
+The first-time wizard (`trileaf onboard`) walks through four steps.
+
+#### Step 1 — Python environment check
+
+Verifies torch, sentence-transformers, and huggingface_hub are installed. Automatically satisfied after setup completes.
+
+#### Step 2 — Detection models (required, ~0.9 GB total)
+
+These two models score every rewrite candidate and are the **minimum local requirement** for running Trileaf. They are always required, regardless of which rewrite backend you choose. Both are public Hugging Face repos and download without a HuggingFace account.
+
+| Model | Size | Role |
+|-------|------|------|
+| [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) | ~0.5 GB | AI-content probability scorer |
+| [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) | ~0.4 GB | Semantic similarity measurement |
+
+These models are downloaded during onboarding and stored locally. The two scoring models run comfortably on CPU — CUDA is not required. On Apple Silicon they can also run on MPS.
+
+#### Step 3 — Rewrite provider
+
+The rewrite provider generates candidate rewrites for each text chunk. Three options are available:
+
+##### Option A — LeafHub (recommended)
+
+[LeafHub](https://github.com/Rebas9512/Leafhub) is a local encrypted API-key vault. It stores your provider credentials in an AES-256-GCM encrypted file (`~/.leafhub/providers.enc`) and serves them to Trileaf at runtime — without exposing them in any dotfile or shell history.
+
+```
+LeafHub vault  →  trileaf runtime  →  external API
+```
+
+During `trileaf onboard` or `trileaf config`, selecting **LeafHub** will:
+
+1. Create a LeafHub project named `trileaf` and link it to this directory (a `.leafhub` token file is written)
+2. Let you bind a provider (e.g. MiniMax, OpenAI) to an alias (e.g. `minimax`)
+3. Automatically read `base_url`, `model`, `api_format`, and `auth_mode` from the bound provider — no further prompts
+
+After setup, the `.env` file contains only the alias reference:
+
+```
+LEAFHUB_ALIAS=minimax
+REWRITE_BACKEND=external
+REWRITE_BASE_URL=https://api.minimax.io/anthropic
+REWRITE_MODEL=MiniMax-M2.5
+```
+
+The API key itself lives only in the LeafHub vault — never on disk in plain text.
+
+**Install LeafHub** (macOS / Linux / WSL):
+```bash
+curl -fsSL https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.ps1 | iex
+```
+
+After the installer completes, open a new terminal so the updated PATH takes effect, then run `trileaf onboard` again.
+
+**Automatic fallback if LeafHub setup fails**
+
+If LeafHub is installed but cannot complete the project-link step (e.g. the manage server is not running, a network error, or a corrupted dotfile), the onboarding wizard automatically falls back to the `.env` flow. A clear error message is shown explaining what failed, and the interactive `.env` wizard opens immediately — no manual intervention needed. You can re-link LeafHub later with `trileaf config`.
+
+##### Option B — External API key in `.env` (simple fallback)
+
+If you prefer not to use LeafHub, the wizard stores the API key directly in `PROJECT_ROOT/.env` (chmod 600, git-ignored). This works for quick local use or CI scenarios where LeafHub is not available.
+
+> **Security note:** The `.env` approach stores the API key in plain text on disk. Anyone with read access to the project directory can read it. Use LeafHub for better key hygiene, especially on shared machines.
+
+The `.env` file written by the wizard looks like:
+
+```
+REWRITE_BACKEND=external
+REWRITE_BASE_URL=https://api.openai.com/v1
+REWRITE_MODEL=gpt-4o
+REWRITE_API_KEY=sk-...
+```
+
+Supported providers include OpenAI, Anthropic, Groq, Mistral, OpenRouter, xAI, Ollama, vLLM, and any OpenAI-compatible gateway.
+
+##### Option C — Local Qwen3-VL-8B (fully offline)
+
+Downloads and runs `Qwen/Qwen3-VL-8B-Instruct` locally. No API key or internet connection needed at inference time.
+
+| Config | VRAM required |
+|--------|--------------|
+| Scoring models only (external rewrite API) | ~2 GB or CPU |
+| Scoring + local Qwen3-VL-8B (bf16) | ~18 GB minimum, **24 GB recommended** |
+
+> If your GPU has less than 16 GB VRAM, use Option A or B for the rewrite step.
+
+Download:
+```bash
+python -m scripts.download_scripts.qwen3_vl_download   # ~16 GB
+```
+
+#### Step 4 — Final validation
+
+`check_env.py` verifies the two required detection models and the active rewrite configuration. Re-run at any time:
+```bash
+trileaf doctor
+```
+
+### Start the dashboard
 
 ```bash
 trileaf run
@@ -140,113 +244,7 @@ trileaf remove --purge-source
 
 ---
 
-## 2. Onboarding
-
-The first-time wizard (`trileaf onboard`) walks through four steps.
-
-### Step 1 — Python environment check
-
-Verifies torch, sentence-transformers, and huggingface_hub are installed. Automatically satisfied after setup completes.
-
-### Step 2 — Detection models (required, ~0.9 GB total)
-
-These two models score every rewrite candidate and are the **minimum local requirement** for running Trileaf. They are always required, regardless of which rewrite backend you choose. Both are public Hugging Face repos and download without a HuggingFace account.
-
-| Model | Size | Role |
-|-------|------|------|
-| [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) | ~0.5 GB | AI-content probability scorer |
-| [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) | ~0.4 GB | Semantic similarity measurement |
-
-These models are downloaded during onboarding and stored locally. The two scoring models run comfortably on CPU — CUDA is not required. On Apple Silicon they can also run on MPS.
-
-### Step 3 — Rewrite provider
-
-The rewrite provider generates candidate rewrites for each text chunk. Three options are available:
-
-#### Option A — LeafHub (recommended)
-
-[LeafHub](https://github.com/Rebas9512/Leafhub) is a local encrypted API-key vault. It stores your provider credentials in an AES-256-GCM encrypted file (`~/.leafhub/providers.enc`) and serves them to Trileaf at runtime — without exposing them in any dotfile or shell history.
-
-```
-LeafHub vault  →  trileaf runtime  →  external API
-```
-
-During `trileaf onboard` or `trileaf config`, selecting **LeafHub** will:
-
-1. Create a LeafHub project named `trileaf` and link it to this directory (a `.leafhub` token file is written)
-2. Let you bind a provider (e.g. MiniMax, OpenAI) to an alias (e.g. `minimax`)
-3. Automatically read `base_url`, `model`, `api_format`, and `auth_mode` from the bound provider — no further prompts
-
-After setup, the `.env` file contains only the alias reference:
-
-```
-LEAFHUB_ALIAS=minimax
-REWRITE_BACKEND=external
-REWRITE_BASE_URL=https://api.minimax.io/anthropic
-REWRITE_MODEL=MiniMax-M2.5
-```
-
-The API key itself lives only in the LeafHub vault — never on disk in plain text.
-
-**Install LeafHub** (macOS / Linux / WSL):
-```bash
-curl -fsSL https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.sh | bash
-```
-
-**Windows (PowerShell):**
-```powershell
-irm https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.ps1 | iex
-```
-
-After the installer completes, open a new terminal so the updated PATH takes effect, then run `trileaf onboard` again.
-
-**Automatic fallback if LeafHub setup fails**
-
-If LeafHub is installed but cannot complete the project-link step (e.g. the manage server is not running, a network error, or a corrupted dotfile), the onboarding wizard automatically falls back to the `.env` flow. A clear error message is shown explaining what failed, and the interactive `.env` wizard opens immediately — no manual intervention needed. You can re-link LeafHub later with `trileaf config`.
-
-#### Option B — External API key in `.env` (simple fallback)
-
-If you prefer not to use LeafHub, the wizard stores the API key directly in `PROJECT_ROOT/.env` (chmod 600, git-ignored). This works for quick local use or CI scenarios where LeafHub is not available.
-
-> **Security note:** The `.env` approach stores the API key in plain text on disk. Anyone with read access to the project directory can read it. Use LeafHub for better key hygiene, especially on shared machines.
-
-The `.env` file written by the wizard looks like:
-
-```
-REWRITE_BACKEND=external
-REWRITE_BASE_URL=https://api.openai.com/v1
-REWRITE_MODEL=gpt-4o
-REWRITE_API_KEY=sk-...
-```
-
-Supported providers include OpenAI, Anthropic, Groq, Mistral, OpenRouter, xAI, Ollama, vLLM, and any OpenAI-compatible gateway.
-
-#### Option C — Local Qwen3-VL-8B (fully offline)
-
-Downloads and runs `Qwen/Qwen3-VL-8B-Instruct` locally. No API key or internet connection needed at inference time.
-
-| Config | VRAM required |
-|--------|--------------|
-| Scoring models only (external rewrite API) | ~2 GB or CPU |
-| Scoring + local Qwen3-VL-8B (bf16) | ~18 GB minimum, **24 GB recommended** |
-
-> If your GPU has less than 16 GB VRAM, use Option A or B for the rewrite step.
-
-Download:
-```bash
-python -m scripts.download_scripts.qwen3_vl_download   # ~16 GB
-```
-
-### Step 4 — Final validation
-
-`check_env.py` verifies the two required detection models and the active rewrite configuration. Re-run at any time:
-```bash
-trileaf doctor
-```
-
----
-
-## 3. Configuring the Rewrite Provider
+## 2. Configuring the Rewrite Provider
 
 ### First-time setup
 
@@ -308,7 +306,7 @@ Prints device info, model paths, and rewrite backend status. Credential source i
 
 ---
 
-## 4. Project Features
+## 3. Project Features
 
 ### Core idea
 
@@ -380,7 +378,7 @@ Configure or reconfigure at any time with `trileaf config`.
 
 ---
 
-## 5. Pipeline Architecture
+## 4. Pipeline Architecture
 
 ### Topology overview
 
@@ -476,7 +474,7 @@ trileaf weight --ai 0.60 --sem 0.35 --risk 0.05      # update (must sum to 1.0)
 
 ---
 
-## 6. Project Structure
+## 5. Project Structure
 
 ```
 ├── trileaf_cli.py                     # CLI entry point
@@ -510,7 +508,7 @@ trileaf weight --ai 0.60 --sem 0.35 --risk 0.05      # update (must sum to 1.0)
 
 ---
 
-## 7. Acknowledgements
+## 6. Acknowledgements
 
 - [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01): public AI-generated-text detection model used as Trileaf's local AI-probability scorer.
 - [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2): public sentence-embedding model used for semantic similarity scoring and sentence-alignment checks.
