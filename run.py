@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import gc
 import os
 import signal
 import sys
@@ -56,52 +55,6 @@ def set_device_hint() -> None:
         os.environ["OPTIMIZER_DEVICE_HINT"] = device
     except Exception:
         os.environ.setdefault("OPTIMIZER_DEVICE_HINT", "unknown")
-
-
-def clear_model_memory() -> None:
-    with suppress(Exception):
-        mr = sys.modules.get("scripts.models_runtime")
-        if mr is not None:
-            mr._DESKLIB_CACHE.clear()
-            mr._MPNET_CACHE.clear()
-            mr._REWRITE_CACHE.clear()
-
-    gc.collect()
-    with suppress(Exception):
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            with suppress(Exception):
-                torch.cuda.ipc_collect()
-
-
-def is_oom_error(exc: BaseException) -> bool:
-    message = str(exc).lower()
-    return (
-        "out of memory" in message
-        or "cuda oom" in message
-        or "cuda out of memory" in message
-    )
-
-
-def preflight_models() -> tuple[list[dict], str | None]:
-    print("[run] Clearing model memory before preflight...")
-    clear_model_memory()
-
-    try:
-        import scripts.models_runtime as mr
-
-        print("[run] Preloading models for status check...")
-        results = mr.preload_models()
-        return results, None
-    except Exception as exc:
-        if is_oom_error(exc):
-            return [], f"OOM during model preload: {exc}"
-        return [], f"Model preload failed: {exc}"
-    finally:
-        print("[run] Clearing model memory after preflight...")
-        clear_model_memory()
 
 
 def wait_for_backend(
@@ -221,24 +174,9 @@ def _bust_static_cache(root: Path) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch the Trileaf dashboard.")
     parser.add_argument(
-        "--configure-rewrite",
-        action="store_true",
-        help="Open the guided rewrite-provider setup before starting the backend.",
-    )
-    parser.add_argument(
-        "--configure-only",
-        action="store_true",
-        help="Open the guided rewrite-provider setup, save config, and exit.",
-    )
-    parser.add_argument(
         "--leafhub-alias",
         default="",
-        help="LeafHub alias to use for the rewrite API key (overrides LEAFHUB_ALIAS in .env).",
-    )
-    parser.add_argument(
-        "--onboard",
-        action="store_true",
-        help="Run the first-time setup wizard (model download + provider config), then exit.",
+        help="LeafHub alias to use for the rewrite API key (overrides LEAFHUB_ALIAS env var).",
     )
     parser.add_argument(
         "--doctor",
@@ -258,24 +196,16 @@ def _load_rewrite_credentials() -> None:
     Resolve rewrite provider credentials and inject into os.environ.
 
     Resolution order:
-      1. .env file (PROJECT_ROOT/.env) — non-secret config + LEAFHUB_ALIAS
-      2. LeafHub probe (.leafhub dotfile) — API key, optionally base_url/model
-      3. Existing os.environ — provider-specific key fallbacks
+      1. LeafHub probe (.leafhub dotfile) — API key, optionally base_url/model
+      2. Existing os.environ — REWRITE_API_KEY / provider-specific key fallbacks
 
     Must be called before models_runtime is imported.
     """
     from scripts import rewrite_config
 
     result = rewrite_config.resolve_credentials()
-    backend = os.getenv("REWRITE_BACKEND", "local")
     cred = result.get("credential_source", "none")
-    print(f"[run] Rewrite backend: {backend}  credentials: {cred}")
-
-
-def _rewrite_backend_is_external() -> bool:
-    """Return True if the configured rewrite backend uses an external API."""
-    from scripts import rewrite_config
-    return rewrite_config.rewrite_backend_is_external()
+    print(f"[run] Rewrite backend: external  credentials: {cred}")
 
 
 def main(argv: list[str] | None = None):
@@ -292,11 +222,6 @@ def main(argv: list[str] | None = None):
     ready_url = os.getenv("DASHBOARD_READY_URL", f"http://{host}:{port}/api/ready")
     reload_enabled = args.reload or os.getenv("DASHBOARD_RELOAD", "").lower() in {"1", "true", "yes", "on"}
 
-    if args.onboard:
-        from scripts import onboarding
-
-        raise SystemExit(onboarding.main())
-
     if args.doctor:
         from scripts import check_env
 
@@ -306,53 +231,18 @@ def main(argv: list[str] | None = None):
             raise
         raise SystemExit(0)
 
-    if args.configure_rewrite or args.configure_only:
-        from scripts import rewrite_provider_cli
-
-        exit_code = rewrite_provider_cli.main(["wizard"])
-        if exit_code:
-            raise SystemExit(exit_code)
-
     if args.leafhub_alias:
         os.environ["LEAFHUB_ALIAS"] = args.leafhub_alias
     _load_rewrite_credentials()
 
-    if args.configure_only:
-        return
-
     run_env_check()
     set_device_hint()
 
-    if _rewrite_backend_is_external():
-        # External API backend: no local rewrite model to check for OOM, and
-        # Desklib / MPNet are small enough to load lazily on the first request.
-        # Skipping preflight eliminates the transformers → sklearn → scipy cold
-        # import (which can stall startup by 10-60 s on first run).
-        print("[run] External rewrite backend — skipping model preflight (models load on first request).")
-        os.environ["OPTIMIZER_SKIP_STARTUP_PRELOAD"] = "1"
-        os.environ["OPTIMIZER_PREFLIGHT_ERROR"] = ""
-    else:
-        preflight_results, preflight_error = preflight_models()
-        if preflight_results:
-            for item in preflight_results:
-                detail = f" ({item['detail']})" if item.get("detail") else ""
-                print(
-                    f"[run] Preflight {item['name']}: "
-                    f"{item['status']} in {item['seconds']:.3f}s{detail}"
-                )
-
-        if preflight_error:
-            print(f"[run] {preflight_error}")
-            print("[run] Falling back to backend startup without startup preload.")
-            os.environ["OPTIMIZER_SKIP_STARTUP_PRELOAD"] = "1"
-            os.environ["OPTIMIZER_PREFLIGHT_ERROR"] = preflight_error
-            clear_model_memory()
-        else:
-            print("[run] Preflight succeeded; backend startup preload will be skipped to avoid double-loading models.")
-            os.environ["OPTIMIZER_SKIP_STARTUP_PRELOAD"] = "1"
-            os.environ["OPTIMIZER_PREFLIGHT_ERROR"] = ""
-
-        clear_model_memory()
+    # External API backend — Desklib/MPNet load lazily on first request.
+    # Skipping preflight avoids the transformers cold-import stall (10-60 s).
+    print("[run] External rewrite backend — models load on first request.")
+    os.environ["OPTIMIZER_SKIP_STARTUP_PRELOAD"] = "1"
+    os.environ["OPTIMIZER_PREFLIGHT_ERROR"] = ""
 
     # Install signal handlers so terminal-close (SIGHUP) and explicit SIGTERM
     # both run the same cleanup path as Ctrl+C (KeyboardInterrupt → finally block).

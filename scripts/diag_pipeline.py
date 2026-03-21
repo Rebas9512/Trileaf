@@ -55,41 +55,31 @@ def check_profile() -> dict:
     from scripts import rewrite_config as rc
     import os
 
-    # Load .env and resolve credentials (LeafHub → .env → env)
+    # Resolve credentials (LeafHub → env)
     result = rc.resolve_credentials()
-    backend = (os.getenv("REWRITE_BACKEND") or "local").strip().lower()
-    if backend == "openai_api":
-        backend = "external"
     cred_source = result.get("credential_source", "none")
 
-    _ok(f"Backend:        {backend}")
+    _ok(f"Backend:        external")
     _ok(f"Credential:     {cred_source}")
 
-    if backend in ("external", "openai_api"):
-        api_kind = os.getenv("REWRITE_API_KIND") or "openai-chat-completions"
-        base_url = os.getenv("REWRITE_BASE_URL") or rc.legacy_env_first("base_url") or ""
-        model    = os.getenv("REWRITE_MODEL") or rc.legacy_env_first("model") or ""
-        api_key  = os.getenv("REWRITE_API_KEY", "")
+    api_kind = os.getenv("REWRITE_API_KIND") or "openai-chat-completions"
+    base_url = os.getenv("REWRITE_BASE_URL") or ""
+    model    = os.getenv("REWRITE_MODEL") or ""
+    api_key  = os.getenv("REWRITE_API_KEY", "")
 
-        _ok(f"api_kind:       {api_kind}")
-        _ok(f"base_url:       {base_url}")
-        _ok(f"model:          {model}")
-        _ok(f"api_key:        {'set (' + cred_source + ')' if api_key else '(NOT SET)'}")
+    _ok(f"api_kind:       {api_kind}")
+    _ok(f"base_url:       {base_url}")
+    _ok(f"model:          {model}")
+    _ok(f"api_key:        {'set (' + cred_source + ')' if api_key else '(NOT SET)'}")
 
-        if not base_url:
-            _fail("REWRITE_BASE_URL is empty — external backend will fail")
-        if not model:
-            _warn("REWRITE_MODEL is empty")
-        if not api_key:
-            _fail("API key is not set — run: trileaf config")
-    else:
-        model_path = os.getenv("REWRITE_MODEL_PATH") or rc.legacy_env_first("model_path") or "./models/Qwen3-VL-8B-Instruct"
-        resolved = PROJECT_ROOT / model_path if not Path(model_path).is_absolute() else Path(model_path)
-        exists = resolved.exists()
-        tag = "[OK]" if exists else "[MISSING]"
-        _info(f"model_path:     {tag}  {resolved}")
+    if not base_url:
+        _fail("REWRITE_BASE_URL is empty — external backend will fail")
+    if not model:
+        _warn("REWRITE_MODEL is empty")
+    if not api_key:
+        _fail("API key is not set — run: trileaf config")
 
-    return {"backend": backend, "profile": {}}
+    return {"backend": "external", "profile": {}}
 
 
 # ── Layer 2: Raw API connectivity ─────────────────────────────────────────────
@@ -97,20 +87,13 @@ def check_profile() -> dict:
 def check_api_raw(profile_info: dict, *, show_full_response: bool = False) -> bool:
     _hdr("Layer 2 — External API raw connectivity")
 
-    profile = profile_info.get("profile") or {}
-    backend = profile_info.get("backend", "local")
-
-    if backend not in ("external", "openai_api"):
-        _info("Backend is local — skipping API connectivity check")
-        return True
-
     import requests as _req
     import os
     from scripts import rewrite_config as rc
 
     api_kind    = (os.getenv("REWRITE_API_KIND") or "openai-chat-completions").strip().lower()
-    base_url    = (os.getenv("REWRITE_BASE_URL") or rc.legacy_env_first("base_url") or "").rstrip("/")
-    model       = os.getenv("REWRITE_MODEL") or rc.legacy_env_first("model") or ""
+    base_url    = (os.getenv("REWRITE_BASE_URL") or "").rstrip("/")
+    model       = os.getenv("REWRITE_MODEL") or ""
     api_key     = os.getenv("REWRITE_API_KEY", "")
     auth_mode   = (os.getenv("REWRITE_AUTH_MODE") or "bearer").strip().lower()
     auth_header = os.getenv("REWRITE_AUTH_HEADER") or "Authorization"
@@ -307,12 +290,10 @@ def main() -> None:
         print("\n[ABORT] Cannot continue without a valid profile.")
         sys.exit(1)
 
-    backend = profile_info.get("backend", "local")
-
     api_ok = check_api_raw(profile_info, show_full_response=args.raw_response)
 
     if not args.api_only:
-        if backend in ("external", "openai_api") and not api_ok:
+        if not api_ok:
             print()
             _warn("Skipping Layer 3/4 because API is not reachable.")
         else:

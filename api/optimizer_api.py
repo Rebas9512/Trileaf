@@ -65,15 +65,8 @@ def _get_runtime_health_snapshot() -> Dict[str, str]:
             }
 
     # Runtime not yet loaded — read directly from env (populated by resolve_credentials).
-    backend = (os.getenv("REWRITE_BACKEND") or "local").strip().lower()
-    if backend == "openai_api":
-        backend = "external"
-
-    if backend == "local":
-        model_path = os.getenv("REWRITE_MODEL_PATH") or "./models/Qwen3-VL-8B-Instruct"
-        rewrite_model = Path(model_path).name
-    else:
-        rewrite_model = os.getenv("REWRITE_MODEL", "")
+    backend = "external"
+    rewrite_model = os.getenv("REWRITE_MODEL", "")
 
     return {
         "device":           os.getenv("OPTIMIZER_DEVICE_HINT", "unknown"),

@@ -29,17 +29,14 @@ REQUIRED_TRACKED = [
     "setup.sh",
     "setup.ps1",
     "scripts/_version.py",
-    "scripts/onboarding.py",
     "scripts/check_env.py",
     "scripts/rewrite_config.py",
-    "scripts/rewrite_provider_cli.py",
     "scripts/chunker.py",
     "scripts/models_runtime.py",
     "scripts/orchestrator.py",
     "scripts/download_scripts/__init__.py",
     "scripts/download_scripts/desklib_detector_download.py",
     "scripts/download_scripts/mpnet_download.py",
-    "scripts/download_scripts/qwen3_vl_download.py",
     "api/optimizer_api.py",
     "api/static/index.html",
     "api/static/app.js",
@@ -147,26 +144,8 @@ def test_version_format() -> None:
 
 # ── No stray openclaw user-facing strings ─────────────────────────────────────
 
-WIZARD_FILES = [
-    "scripts/onboarding.py",
-    "scripts/rewrite_provider_cli.py",
-]
-
-
-@pytest.mark.parametrize("rel_path", WIZARD_FILES)
-def test_no_openclaw_user_strings(rel_path: str) -> None:
-    """User-visible wizard text must not reference openclaw."""
-    tree = ast.parse((PROJECT_ROOT / rel_path).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            assert "openclaw" not in node.value.lower(), (
-                f"User-facing string in {rel_path} references openclaw: {node.value[:80]!r}"
-            )
-
-
 USER_FACING_FILES = [
     "README.md",
-    "scripts/onboarding.py",
     "scripts/check_env.py",
     "run.py",
     "setup.sh",

@@ -39,7 +39,6 @@ _INSTALL_META_NAME = "install.json"
 _MANAGED_MODEL_DIR_NAMES = {
     "desklib-ai-text-detector-v1.01",
     "sentence-transformers-paraphrase-mpnet-base-v2",
-    "Qwen3-VL-8B-Instruct",
 }
 
 
@@ -58,22 +57,41 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
 
 def _cmd_onboard(args: argparse.Namespace) -> None:
-    """Run the first-time onboarding wizard."""
-    from scripts import onboarding
+    """Download detection models (env check + model download only)."""
+    from scripts import check_env
 
-    argv: list[str] = []
-    if args.yes:
-        argv.append("--yes")
-    raise SystemExit(onboarding.main(argv))
+    print("\nChecking environment ...")
+    try:
+        check_env.main()
+    except SystemExit as exc:
+        if exc.code not in (None, 0):
+            raise
+
+    # Model downloads
+    from scripts.download_scripts import (
+        desklib_detector_download,
+        mpnet_download,
+    )
+    yes = getattr(args, "yes", False) or getattr(args, "models_only", False)
+    desklib_detector_download.main(yes=yes)
+    mpnet_download.main(yes=yes)
+    raise SystemExit(0)
 
 
-def _cmd_config(args: argparse.Namespace) -> None:
-    """Open the interactive provider configuration wizard."""
-    from scripts import rewrite_provider_cli
+def _cmd_config(_args: argparse.Namespace) -> None:
+    """Show LeafHub registration status for this project."""
+    import subprocess, shutil
 
-    # Support 'trileaf config show' and 'trileaf config clear' sub-verbs
-    sub = getattr(args, "config_sub", None) or "wizard"
-    raise SystemExit(rewrite_provider_cli.main([sub]))
+    leafhub = shutil.which("leafhub")
+    if not leafhub:
+        print("LeafHub is not installed.")
+        print("  Install: https://github.com/Rebas9512/Leafhub")
+        raise SystemExit(1)
+
+    print("\nLeafHub status:")
+    subprocess.run([leafhub, "status"], check=False)
+    print("\nProject binding:")
+    subprocess.run([leafhub, "project", "show", "trileaf"], check=False)
 
 
 def _cmd_doctor(_args: argparse.Namespace) -> None:
@@ -265,27 +283,14 @@ def _collect_managed_model_dirs(project_root: Path) -> list[Path]:
     paths: list[Path] = []
     try:
         from scripts import app_config
-        from scripts import rewrite_config
 
         paths.append(app_config.resolve_model_path("desklib"))
         paths.append(app_config.resolve_model_path("mpnet"))
-
-        # Local rewrite model path from .env (if configured)
-        raw_path = (
-            rewrite_config._read_dot_env_key(rewrite_config.ENV_FILE, "REWRITE_MODEL_PATH")
-            or rewrite_config.legacy_env_first("model_path")
-            or ""
-        )
-        if raw_path:
-            paths.append(_resolve_from_project(project_root, raw_path))
-        else:
-            paths.append(project_root / "models" / "Qwen3-VL-8B-Instruct")
     except Exception:
         paths.extend(
             [
                 project_root / "models" / "desklib-ai-text-detector-v1.01",
                 project_root / "models" / "sentence-transformers-paraphrase-mpnet-base-v2",
-                project_root / "models" / "Qwen3-VL-8B-Instruct",
             ]
         )
 
@@ -741,32 +746,27 @@ def main(argv: list[str] | None = None) -> None:
         help="Enable uvicorn auto-reload (development mode)",
     )
 
-    # trileaf setup  (canonical first-run command; alias for onboard)
+    # trileaf setup  — download detection models
     p_setup = sub.add_parser(
-        "setup", help="First-time setup: download models and configure a provider"
+        "setup", help="Download detection models (desklib + mpnet, ~0.9 GB)"
     )
     p_setup.add_argument(
         "-y", "--yes", action="store_true",
-        help="Non-interactive mode: accept all defaults",
+        help="Non-interactive: skip confirmation prompts",
     )
-
-    # trileaf onboard  (kept for backwards compatibility)
-    p_onboard = sub.add_parser(
-        "onboard", help="Alias for 'setup' (first-time setup)"
-    )
-    p_onboard.add_argument(
-        "-y", "--yes", action="store_true",
-        help="Non-interactive mode: accept all defaults",
+    p_setup.add_argument(
+        "--models-only", action="store_true", dest="models_only",
+        help="Internal flag used by install scripts",
     )
 
     # trileaf stop
     sub.add_parser("stop", help="Stop a running Trileaf server and release GPU memory")
 
-    # trileaf config [show|clear]
-    p_cfg = sub.add_parser("config", help="Configure rewrite provider (.env)")
+    # trileaf config — show LeafHub registration status
+    p_cfg = sub.add_parser("config", help="Show LeafHub registration status for this project")
     p_cfg.add_argument(
-        "config_sub", nargs="?", default="wizard",
-        choices=["wizard", "show", "clear"],
+        "config_sub", nargs="?", default="show",
+        choices=["show"],
         help="wizard (default) | show current config | clear rewrite keys",
     )
 
@@ -824,7 +824,6 @@ def main(argv: list[str] | None = None) -> None:
         "run":     _cmd_run,
         "stop":    _cmd_stop,
         "setup":   _cmd_onboard,
-        "onboard": _cmd_onboard,
         "config":  _cmd_config,
         "weight":  _cmd_weight,
         "update":  _cmd_update,

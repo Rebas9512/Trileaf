@@ -22,7 +22,8 @@ Its scoring layer is built on two public Hugging Face models: [`desklib/ai-text-
 |-------------|-------|
 | Python 3.10+ | 3.12 recommended |
 | Git | For cloning |
-| CUDA GPU (optional) | Required only for the optional local rewrite model; detection models run on CPU, Apple Silicon MPS, or CUDA |
+| Internet connection | Required for first-time model download (~0.9 GB) and API calls |
+| CUDA GPU (optional) | Detection models run on CPU, MPS, or CUDA — GPU not required |
 
 ### One-liner install (macOS / Linux / WSL)
 
@@ -38,12 +39,10 @@ One-liner layout:
 - If the directory you choose already exists and is not empty, the installer falls back to a `trileaf/` subdirectory inside it.
 - User config lives in `~/.trileaf/`.
 - The public command is registered as `~/.local/bin/trileaf`.
-- CLI registration tries to append `~/.local/bin` to `~/.bash_profile`. If that write fails, installation still completes and the script prints the exact `export PATH=...` command to run manually.
 
 **Options** (environment variables, set before the pipe):
 ```bash
 TRILEAF_DIR=~/tools/trileaf  curl -fsSL … | bash   # custom install path
-TRILEAF_NO_ONBOARD=1         curl -fsSL … | bash   # skip the wizard (CI / headless)
 ```
 
 ### Windows
@@ -59,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.cmd 
 On Windows, the one-liner follows the same layout:
 
 - Install directory prompt first (default: `%USERPROFILE%\trileaf`)
-- If the selected directory already exists and is not empty, the installer falls back to a `trileaf\` subdirectory inside it
+- If the selected directory already exists and is not empty, falls back to `trileaf\` subdirectory inside it
 - Source checkout + `.venv\` inside that install directory
 - JSON config files in `%USERPROFILE%\.trileaf`
 - `trileaf.exe` exposed through the venv `Scripts\` directory on PATH
@@ -84,7 +83,7 @@ cd trileaf
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
-The manual setup script creates an isolated `.venv/` inside the cloned directory. After it completes, activate the venv before using the `trileaf` command:
+The manual setup script creates an isolated `.venv/` inside the cloned directory. After it completes:
 
 ```bash
 source .venv/bin/activate   # macOS / Linux / WSL — once per terminal session
@@ -92,125 +91,52 @@ source .venv/bin/activate   # macOS / Linux / WSL — once per terminal session
 trileaf run
 ```
 
-### Onboarding
+---
 
-The first-time wizard (`trileaf onboard`) walks through four steps.
+## 2. Setup & First Use
 
-#### Step 1 — Python environment check
+### What happens during install
 
-Verifies torch, sentence-transformers, and huggingface_hub are installed. Automatically satisfied after setup completes.
+The installer (`install.sh` / `install.ps1`) and setup script (`setup.sh` / `setup.ps1`) run through six steps automatically:
 
-#### Step 2 — Detection models (required, ~0.9 GB total)
+| Step | What it does |
+|------|--------------|
+| 1. Platform | Detect OS, check requirements |
+| 2. Python | Find Python 3.10+, validate version |
+| 3. Virtual environment | Create `.venv`, install all Python dependencies |
+| 4. CLI registration | Register `trileaf` command on your PATH |
+| 5. **LeafHub integration** | Install LeafHub (if needed) and register this project |
+| 6. Detection models | Prompt to download the two scoring models (~0.9 GB) |
 
-These two models score every rewrite candidate and are the **minimum local requirement** for running Trileaf. They are always required, regardless of which rewrite backend you choose. Both are public Hugging Face repos and download without a HuggingFace account.
+Step 5 is fully automatic — you don't need to install LeafHub separately. See [LeafHub Integration](#3-leafhub-integration) for details.
 
-| Model | Size | Role |
-|-------|------|------|
-| [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) | ~0.5 GB | AI-content probability scorer |
-| [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) | ~0.4 GB | Semantic similarity measurement |
-
-These models are downloaded during onboarding and stored locally. The two scoring models run comfortably on CPU — CUDA is not required. On Apple Silicon they can also run on MPS.
-
-#### Step 3 — Rewrite provider
-
-The rewrite provider generates candidate rewrites for each text chunk. Three options are available:
-
-##### Option A — LeafHub (recommended)
-
-[LeafHub](https://github.com/Rebas9512/Leafhub) is a local encrypted API-key vault. It stores your provider credentials in an AES-256-GCM encrypted file (`~/.leafhub/providers.enc`) and serves them to Trileaf at runtime — without exposing them in any dotfile or shell history.
-
-```
-LeafHub vault  →  trileaf runtime  →  external API
-```
-
-During `trileaf onboard` or `trileaf config`, selecting **LeafHub** will:
-
-1. Create a LeafHub project named `trileaf` and link it to this directory (a `.leafhub` token file is written)
-2. Let you bind a provider (e.g. MiniMax, OpenAI) to an alias (e.g. `minimax`)
-3. Automatically read `base_url`, `model`, `api_format`, and `auth_mode` from the bound provider — no further prompts
-
-After setup, the `.env` file contains only the alias reference:
-
-```
-LEAFHUB_ALIAS=minimax
-REWRITE_BACKEND=external
-REWRITE_BASE_URL=https://api.minimax.io/anthropic
-REWRITE_MODEL=MiniMax-M2.5
-```
-
-The API key itself lives only in the LeafHub vault — never on disk in plain text.
-
-**Install LeafHub** (macOS / Linux / WSL):
-```bash
-curl -fsSL https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.sh | bash
-```
-
-**Windows (PowerShell):**
-```powershell
-irm https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.ps1 | iex
-```
-
-After the installer completes, open a new terminal so the updated PATH takes effect, then run `trileaf onboard` again.
-
-**Automatic fallback if LeafHub setup fails**
-
-If LeafHub is installed but cannot complete the project-link step (e.g. the manage server is not running, a network error, or a corrupted dotfile), the onboarding wizard automatically falls back to the `.env` flow. A clear error message is shown explaining what failed, and the interactive `.env` wizard opens immediately — no manual intervention needed. You can re-link LeafHub later with `trileaf config`.
-
-##### Option B — External API key in `.env` (simple fallback)
-
-If you prefer not to use LeafHub, the wizard stores the API key directly in `PROJECT_ROOT/.env` (chmod 600, git-ignored). This works for quick local use or CI scenarios where LeafHub is not available.
-
-> **Security note:** The `.env` approach stores the API key in plain text on disk. Anyone with read access to the project directory can read it. Use LeafHub for better key hygiene, especially on shared machines.
-
-The `.env` file written by the wizard looks like:
-
-```
-REWRITE_BACKEND=external
-REWRITE_BASE_URL=https://api.openai.com/v1
-REWRITE_MODEL=gpt-4o
-REWRITE_API_KEY=sk-...
-```
-
-Supported providers include OpenAI, Anthropic, Groq, Mistral, OpenRouter, xAI, Ollama, vLLM, and any OpenAI-compatible gateway.
-
-##### Option C — Local Qwen3-VL-8B (fully offline)
-
-Downloads and runs `Qwen/Qwen3-VL-8B-Instruct` locally. No API key or internet connection needed at inference time.
-
-| Config | VRAM required |
-|--------|--------------|
-| Scoring models only (external rewrite API) | ~2 GB or CPU |
-| Scoring + local Qwen3-VL-8B (bf16) | ~18 GB minimum, **24 GB recommended** |
-
-> If your GPU has less than 16 GB VRAM, use Option A or B for the rewrite step.
-
-Download:
-```bash
-python -m scripts.download_scripts.qwen3_vl_download   # ~16 GB
-```
-
-#### Step 4 — Final validation
-
-`check_env.py` verifies the two required detection models and the active rewrite configuration. Re-run at any time:
-```bash
-trileaf doctor
-```
-
-### Start the dashboard
+### After install
 
 ```bash
-trileaf run
+trileaf run       # start the dashboard
 ```
 
 Open **http://127.0.0.1:8001** in your browser.
 
-All Trileaf operations are available as subcommands:
+If you skipped model download during setup, download them now:
+
+```bash
+trileaf setup     # download detection models (desklib + mpnet)
+```
+
+Verify everything is working:
+
+```bash
+trileaf doctor    # full environment and configuration health check
+```
+
+### CLI commands
 
 | Command | What it does |
 |---------|-------------|
 | `trileaf run` | Start the dashboard server |
-| `trileaf onboard` | First-time setup wizard (models + provider) |
-| `trileaf config` | Reconfigure the rewrite provider |
+| `trileaf setup` | Download detection models (first-time or re-download) |
+| `trileaf config` | Show LeafHub status, project binding, and credential info |
 | `trileaf weight` | Show or update Pareto utility weights |
 | `trileaf update` | Pull the latest version from git and refresh packages |
 | `trileaf doctor` | Environment and model health check |
@@ -219,14 +145,14 @@ All Trileaf operations are available as subcommands:
 
 Run `trileaf <command> --help` for per-command options.
 
-### Manual setup script flags
+### Setup script flags
 
 | Flag | Effect |
 |------|--------|
 | `--reinstall` | Delete and recreate `.venv` from scratch |
-| `--skip-onboarding` | Skip model download / provider wizard |
-| `--headless` | Non-interactive CI mode (implies `--skip-onboarding`) |
+| `--headless` | Non-interactive CI mode — no prompts |
 | `--doctor` | Run environment check only, then exit |
+| `--from-installer` | Internal flag set by `install.sh` (adjusts banner only) |
 
 ### Uninstall / clean removal
 
@@ -234,85 +160,113 @@ Run `trileaf <command> --help` for per-command options.
 trileaf remove
 ```
 
-One-liner installs are removed completely: the chosen install directory, `~/.trileaf/`, the `trileaf` symlink / PATH entry, generated models, and config are cleaned up.
+Removes the install directory, `~/.trileaf/`, the `trileaf` symlink / PATH entry, downloaded models, and config.
 
-For a manual source checkout, `trileaf remove` deletes generated files (`.venv`, downloaded models, build artefacts, caches, user config). If you also want to delete the checkout itself:
+For a manual source checkout, also removes generated files (`.venv`, downloaded models, build artefacts, caches):
 
 ```bash
-trileaf remove --purge-source
+trileaf remove --purge-source    # also delete the source checkout
 ```
 
 ---
 
-## 2. Configuring the Rewrite Provider
+## 3. LeafHub Integration
 
-### First-time setup
+Trileaf uses [LeafHub](https://github.com/Rebas9512/Leafhub) for secure API key management. LeafHub is a local encrypted vault — your API keys never appear in plaintext files or shell history.
+
+### How the integration works
+
+During `setup.sh` (Step 5), Trileaf automatically:
+
+1. Detects whether LeafHub is installed; installs it if not.
+2. Registers this Trileaf project in LeafHub (`leafhub register trileaf --path <dir>`).
+3. If no API providers are configured, opens the provider setup wizard.
+4. Binds a provider to the project under the alias `"rewrite"`.
+5. Copies `leafhub_probe.py` into the project root for runtime detection.
+
+After setup, a `.leafhub` token file lives in the project root (chmod 600, git-ignored). On every startup, Trileaf reads this file to retrieve your API key from the encrypted vault — no key ever stored in any config file.
+
+### What the vault manages for you
+
+```
+LeafHub vault  →  Trileaf runtime  →  external rewrite API
+     ↑
+     │  leafhub register trileaf
+     │  (runs automatically during setup.sh)
+```
+
+The vault stores:
+- Your API key (AES-256-GCM encrypted)
+- Provider config: `base_url`, `model`, `api_format`, `auth_mode`
+
+At startup, Trileaf resolves all of these from the vault automatically.
+
+### Managing credentials
 
 ```bash
-trileaf onboard
+trileaf config         # show current LeafHub status and binding info
+leafhub manage         # open the Web UI to add/edit providers at http://localhost:8765
 ```
 
-The wizard guides you through all four steps end-to-end.
-
-### Reconfiguring the provider
+To switch providers, add a new one in LeafHub and re-bind:
 
 ```bash
-trileaf config
+leafhub provider add --name "Anthropic" --key "sk-ant-..." --base-url https://api.anthropic.com
+leafhub project bind trileaf --alias rewrite --provider "Anthropic" --model claude-3-5-haiku-20241022
 ```
-
-This re-runs only the provider wizard (Step 3). It is the recommended way to switch between providers, update model names, or re-link a LeafHub project.
-
-### LeafHub flow (linked project)
-
-When a LeafHub project is already linked, `trileaf config` detects the bound aliases automatically:
-
-```
-  Bound aliases in this LeafHub project:
-    1. minimax
-    2. Enter a different alias
-  Select alias: 1
-
-  Base URL:  https://api.minimax.io/anthropic
-  Model:     MiniMax-M2.5
-
-  [OK] Wrote .env
-       LeafHub alias: minimax
-       Base URL:     https://api.minimax.io/anthropic
-       Model:        MiniMax-M2.5
-       API key fetched from LeafHub vault at runtime.
-```
-
-If the selected alias has a complete provider profile in LeafHub (`base_url` + `model`), no further prompts are shown. If the profile is partial, only the missing fields are asked.
 
 ### Credential resolution order
 
 At runtime, Trileaf resolves credentials in this priority order:
 
 ```
-1. LeafHub vault      → REWRITE_API_KEY (+ base_url / model / auth_mode from provider config)
-2. PROJECT_ROOT/.env  → all REWRITE_* keys loaded as base layer
-3. os.environ         → provider-specific fallbacks (e.g. OPENAI_API_KEY)
+1. LeafHub vault (.leafhub token)  →  API key + base_url + model + auth config
+2. Environment variables           →  REWRITE_API_KEY, or provider-specific
+                                       (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
 ```
 
-LeafHub's API key always wins. For other fields (model name, auth mode), the `.env` value takes priority over the LeafHub-provided default — this lets you override individual settings locally without changing the vault.
+LeafHub is always tried first. Env vars serve as a fallback for CI or advanced usage.
 
-### Health check
+### Supported rewrite providers
 
-```bash
-trileaf doctor
-```
+Any OpenAI-compatible API endpoint works, including:
 
-Prints device info, model paths, and rewrite backend status. Credential source is shown as `leafhub`, `dotenv`, or `env` depending on what resolved.
+| Category | Examples |
+|----------|---------|
+| Cloud API | OpenAI, Anthropic, Google Gemini, Groq, Mistral, xAI |
+| Self-hosted | Ollama, vLLM, LiteLLM |
+| Regional | MiniMax, Moonshot/Kimi, OpenRouter, NVIDIA NIM |
 
 ---
 
-## 3. Project Features
+## 4. Detection Models
+
+Two local models score every rewrite candidate. They are required and always run locally (no external API):
+
+| Model | Size | Role |
+|-------|------|------|
+| [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) | ~0.5 GB | AI-content probability scorer |
+| [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) | ~0.4 GB | Semantic similarity measurement |
+
+Both models run on CPU, Apple Silicon MPS, or CUDA — no GPU is required for typical use.
+
+Download (runs automatically during setup, or manually):
+
+```bash
+trileaf setup
+```
+
+The models are stored in `models/` inside the install directory and are git-ignored.
+
+---
+
+## 5. How the Pipeline Works
 
 ### Core idea
 
-Most AI-detection tools exploit statistical patterns that are characteristic of LLM output: overly uniform sentence length, predictable phrasing, lack of idiomatic variation, and low perplexity relative to a reference distribution. Trileaf attacks those patterns directly, but the key idea is broader: the optimizer is the pipeline, not the rewrite model.
+Most AI-detection tools exploit statistical patterns characteristic of LLM output: overly uniform sentence length, predictable phrasing, lack of idiomatic variation, and low perplexity. Trileaf attacks those patterns directly — but the key idea is that **the optimizer is the pipeline, not the rewrite model**.
 
-If your preferred model can already write, it can also refine its own writing more effectively when it is wrapped in a disciplined system: diverse rewrite prompts, standardized scoring, hard semantic gates, and deterministic candidate selection. Rather than trusting one rewrite attempt, Trileaf turns each chunk into a controlled competition and picks the version that best trades off detectability reduction against meaning preservation.
+If your preferred model can already write, it can also refine its own writing more effectively when wrapped in a disciplined system: diverse rewrite prompts, standardized scoring, hard semantic gates, and deterministic candidate selection. Rather than trusting one rewrite attempt, Trileaf turns each chunk into a controlled competition and picks the version that best trades off detectability reduction against meaning preservation.
 
 ### The ensemble strategy
 
@@ -340,45 +294,29 @@ Generating multiple candidates is only useful if selection is principled. The pi
    U = W_AI × ai_gain_z + W_SEM × sem_z − W_RISK × risk_penalty
    ```
 
-   Default weights: `W_AI = 0.60`, `W_SEM = 0.35`, `W_RISK = 0.05`. Adjustable via `trileaf weight` or directly in `~/.trileaf/config.json`.
+   Default weights: `W_AI = 0.60`, `W_SEM = 0.35`, `W_RISK = 0.05`. Adjustable via `trileaf weight`.
 
 If no candidate passes the gate, the original chunk is kept unchanged — the optimizer never silently degrades quality.
 
 ### Short text vs long text mode
 
-The dashboard toggle selects between two chunking strategies:
-
 | Mode | Chunk size | Paragraph strategy | Best for |
 |------|------------|-------------------|----------|
 | **Short text** | ~200 chars | Each paragraph is its own chunk; large paragraphs split at sentence boundaries | Texts up to ~3 000 chars; fine-grained control; tends to produce the largest AI-score reduction |
-| **Long text** | ~400 chars | Consecutive short paragraphs are merged until the target size is reached; large paragraphs are still sentence-split | Texts of ~2 000–8 000 chars; preserves rhetorical flow and style consistency across paragraphs |
-
-Both modes pass through the same Pareto-selection scoring pipeline. The 50 000-character API limit applies in both modes.
+| **Long text** | ~400 chars | Consecutive short paragraphs are merged until the target size is reached | Texts of ~2 000–8 000 chars; preserves rhetorical flow and style consistency |
 
 ### Two-pass optimization
-
-The **Run Mode** toggle on the dashboard selects between two execution strategies:
 
 | Mode | Description |
 |------|-------------|
 | **Single Run** | One standard optimization pass — default for most tasks |
 | **Double Run** | The text passes through the full pipeline twice; the first-pass output becomes the input for the second pass |
 
-In Double Run mode the original textarea text is never modified. The second pass uses an internal buffer so the source copy is always preserved. Final AI-score deltas are reported relative to the **original** input from Pass 1.
-
-### Bring your own model
-
-The rewrite backend is fully pluggable. Any OpenAI-compatible API endpoint works, including:
-
-- Cloud providers (OpenAI, Anthropic, Google Gemini, Groq, Mistral, xAI)
-- Self-hosted servers (Ollama, vLLM, LiteLLM)
-- Regional providers (MiniMax, Moonshot/Kimi, OpenRouter)
-
-Configure or reconfigure at any time with `trileaf config`.
+In Double Run mode the original textarea text is never modified. Final AI-score deltas are reported relative to the original input from Pass 1.
 
 ---
 
-## 4. Pipeline Architecture
+## 6. Pipeline Architecture
 
 ### Topology overview
 
@@ -457,7 +395,7 @@ The dashboard receives a WebSocket event stream as the pipeline runs. Each chunk
 
 ### Key configuration parameters
 
-Thresholds and weights are stored in `~/.trileaf/config.json`. Utility weights can be updated at any time via the CLI:
+Thresholds and weights are stored in `~/.trileaf/config.json`. Utility weights can be updated at any time:
 
 ```bash
 trileaf weight                                        # show current weights
@@ -474,42 +412,47 @@ trileaf weight --ai 0.60 --sem 0.35 --risk 0.05      # update (must sum to 1.0)
 
 ---
 
-## 5. Project Structure
+## 7. Project Structure
 
 ```
-├── trileaf_cli.py                     # CLI entry point
-├── run.py                             # Server launcher (called by trileaf_cli)
+Trileaf/
+├── trileaf_cli.py                     # CLI entry point (trileaf command)
+├── run.py                             # Server launcher (uvicorn bootstrap, credential resolution)
 ├── pyproject.toml                     # Package metadata — registers the trileaf command
-├── install.sh / install.ps1 / install.cmd  # One-liner installers
-├── setup.sh / setup.ps1               # Manual clone-and-run setup scripts
+├── install.sh                         # macOS/Linux/WSL one-liner installer (thin bootstrap)
+├── install.ps1                        # Windows PowerShell one-liner installer (thin bootstrap)
+├── install.cmd                        # Windows CMD bootstrap → install.ps1
+├── setup.sh                           # Unix canonical setup: venv + deps + LeafHub + models
+├── setup.ps1                          # Windows canonical setup: mirrors setup.sh
 ├── requirements.txt                   # Python runtime dependencies
 ├── requirements-dev.txt               # CI / test dependencies
+│
 ├── api/
 │   ├── optimizer_api.py               # FastAPI app + WebSocket broadcast
 │   └── static/                        # Dashboard assets (HTML / JS / CSS)
+│
 ├── scripts/
-│   ├── onboarding.py                  # First-time setup wizard (trileaf onboard)
 │   ├── check_env.py                   # Environment / health check (trileaf doctor)
-│   ├── rewrite_config.py              # Credential resolution (LeafHub → .env → env vars)
-│   ├── rewrite_provider_cli.py        # Interactive provider configuration wizard
+│   ├── rewrite_config.py              # Credential resolution (LeafHub → env vars)
 │   ├── app_config.py                  # Application config (~/.trileaf/config.json)
 │   ├── orchestrator.py                # Pareto-selection pipeline
 │   ├── chunker.py                     # Text cleaning + splitting
 │   ├── models_runtime.py              # Model loading, caching, inference, API calls
-│   ├── diag_pipeline.py               # Diagnostic / debug utilities
+│   ├── diag_pipeline.py               # Diagnostic / debug script
 │   ├── _version.py                    # Single version source of truth
 │   └── download_scripts/              # Per-model HuggingFace downloaders
 │       ├── desklib_detector_download.py
-│       ├── mpnet_download.py
-│       └── qwen3_vl_download.py
-├── tests/                             # pytest test suite (229+ tests)
-└── models/                            # Downloaded model weights (git-ignored)
+│       └── mpnet_download.py
+│
+├── tests/                             # pytest test suite (157+ tests)
+├── models/                            # Downloaded model weights (git-ignored)
+└── leafhub/                           # leafhub_probe.py (copied here at setup time)
 ```
 
 ---
 
-## 6. Acknowledgements
+## 8. Acknowledgements
 
 - [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01): public AI-generated-text detection model used as Trileaf's local AI-probability scorer.
 - [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2): public sentence-embedding model used for semantic similarity scoring and sentence-alignment checks.
-- [**LeafHub**](https://github.com/Rebas9512/Leafhub): local encrypted API-key vault that Trileaf integrates with for secure credential management.
+- [**LeafHub**](https://github.com/Rebas9512/Leafhub): local encrypted API-key vault that Trileaf uses for secure credential management. Required dependency — installed and configured automatically during setup.

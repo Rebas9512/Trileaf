@@ -18,8 +18,6 @@ dependencies = [
     "safetensors>=0.4.3",
     "sentencepiece>=0.2.0",
     "huggingface_hub>=0.22.0",
-    "accelerate>=0.33.0",
-    "Pillow>=10.0.0",
     "sentence-transformers>=3.0.0",
 ]
 
@@ -27,8 +25,9 @@ dependencies = [
 trileaf = "trileaf_cli:main"
 
 [project.optional-dependencies]
-# LeafHub is optional — Trileaf works without it (manual .env key entry).
-# Install with:  pip install "trileaf[leafhub]"
+# LeafHub provides encrypted API key management.
+# Installed automatically by setup.sh; or manually:
+#   pip install "trileaf[leafhub]"
 leafhub = [
     "leafhub @ git+https://github.com/Rebas9512/Leafhub.git",
 ]

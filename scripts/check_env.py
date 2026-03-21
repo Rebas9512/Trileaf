@@ -5,9 +5,9 @@ Checks
 ------
 - torch device info
 - sentence-transformers availability
-- Each required model directory exists (DESKLIB, MPNET, local rewrite model if used)
+- Each required model directory exists (DESKLIB, MPNET)
 - Model shard file completeness
-- External rewrite API config if backend = external
+- External rewrite API config (base_url, model, api_key)
 
 Run standalone:  trileaf doctor
 Called by run.py on startup.
@@ -64,8 +64,6 @@ def main() -> None:
     except Exception:
         __version__ = "unknown"
     print(f"=== Trileaf v{__version__} — Environment Check ===")
-    # Ensure .env is loaded before reading env vars
-    rewrite_config.load_dot_env()
 
     credential_source = os.getenv("REWRITE_CREDENTIAL_SOURCE", "")
 
@@ -98,30 +96,14 @@ def main() -> None:
 
     print()
 
-    # ── Model paths ───────────────────────────────────────────────────────────
-    rewrite_backend = rewrite_config.first_defined(
-        os.getenv("REWRITE_BACKEND"),
-        rewrite_config.legacy_env_first("backend"),
-        "local",
-    ).lower()
-    if rewrite_backend == "openai_api":
-        rewrite_backend = "external"
-
     if credential_source:
         print(f"Credential source:    {credential_source}")
 
+    # ── Detection model paths ─────────────────────────────────────────────────
     local_models = {
         "desklib": str(app_config.resolve_model_path("desklib")),
         "mpnet":   str(app_config.resolve_model_path("mpnet")),
     }
-    if rewrite_backend == "local":
-        local_models["rewrite"] = str(_resolve(
-            rewrite_config.first_defined(
-                os.getenv("REWRITE_MODEL_PATH"),
-                rewrite_config.legacy_env_first("model_path"),
-                "./models/Qwen3-VL-8B-Instruct",
-            )
-        ))
 
     all_ok = True
     print("Local model directories:")
@@ -141,55 +123,51 @@ def main() -> None:
                 all_ok = False
 
     # ── External rewrite API config ──────────────────────────────────────────
-    if rewrite_backend == "external":
-        provider_id = rewrite_config.normalize_provider_id(os.getenv("REWRITE_PROVIDER_ID", ""))
-        api_kind  = os.getenv("REWRITE_API_KIND") or "openai-chat-completions"
-        api_url   = os.getenv("REWRITE_BASE_URL") or rewrite_config.legacy_env_first("base_url") or ""
-        api_model = os.getenv("REWRITE_MODEL") or rewrite_config.legacy_env_first("model") or ""
-        api_key   = os.getenv("REWRITE_API_KEY", "")
-        leafhub_alias = rewrite_config._read_dot_env_key(rewrite_config.ENV_FILE, "LEAFHUB_ALIAS") or ""
-        api_key_candidates = rewrite_config.format_env_var_list(
-            rewrite_config.get_provider_env_api_key_candidates(provider_id)
+    provider_id = rewrite_config.normalize_provider_id(os.getenv("REWRITE_PROVIDER_ID", ""))
+    api_kind  = os.getenv("REWRITE_API_KIND") or "openai-chat-completions"
+    api_url   = os.getenv("REWRITE_BASE_URL") or ""
+    api_model = os.getenv("REWRITE_MODEL") or ""
+    api_key   = os.getenv("REWRITE_API_KEY", "")
+    leafhub_alias = os.getenv("LEAFHUB_ALIAS") or ""
+    api_key_candidates = rewrite_config.format_env_var_list(
+        rewrite_config.get_provider_env_api_key_candidates(provider_id)
+    )
+    print()
+    cred_label = "via LeafHub" if leafhub_alias else (credential_source or "env var")
+    print(f"Rewrite backend: external  (credential: {cred_label})")
+    if provider_id:
+        print(f"  provider:  {provider_id}")
+    print(f"  api_kind:  {api_kind}")
+    print(f"  base_url:  {api_url or '(not set — run: trileaf config)'}")
+    print(f"  model:     {api_model or '(not set)'}")
+    if leafhub_alias:
+        print(f"  api_key:   via LeafHub alias='{leafhub_alias}' ({credential_source or 'pending'})")
+    elif api_key:
+        print(f"  api_key:   set ({credential_source or 'env'})")
+    else:
+        print(f"  api_key:   (not set; run 'trileaf config' or set {api_key_candidates})")
+    if not api_url:
+        print("  ERROR: REWRITE_BASE_URL is required")
+        all_ok = False
+    if not api_model:
+        print("  ERROR: REWRITE_MODEL is required")
+        all_ok = False
+    if not api_key and not leafhub_alias:
+        print(
+            "  ERROR: rewrite API key is required — "
+            f"link LeafHub ('trileaf config') or set {api_key_candidates}"
         )
-        print()
-        print("Rewrite backend: external")
-        if provider_id:
-            print(f"  provider:  {provider_id}")
-        print(f"  api_kind:  {api_kind}")
-        print(f"  base_url:  {api_url or '(not set — run: trileaf config)'}")
-        print(f"  model:     {api_model or '(not set)'}")
-        if leafhub_alias:
-            print(f"  api_key:   via LeafHub alias='{leafhub_alias}' ({credential_source or 'pending'})")
-        elif api_key:
-            print(f"  api_key:   set ({credential_source or 'env'})")
-        else:
-            print(f"  api_key:   (not set; run 'trileaf config' or set {api_key_candidates})")
-        if not api_url:
-            print("  ERROR: REWRITE_BASE_URL is required for external backend")
-            all_ok = False
-        if not api_model:
-            print("  ERROR: REWRITE_MODEL is required for external backend")
-            all_ok = False
-        if not api_key and not leafhub_alias:
-            print(
-                "  ERROR: rewrite API key is required — "
-                f"set REWRITE_API_KEY in .env or link LeafHub ({api_key_candidates})"
-            )
-            all_ok = False
+        all_ok = False
 
     print()
     if all_ok:
-        if rewrite_backend == "external":
-            print("All checks passed. Detection models are ready; rewrites will use the configured external API.")
-        else:
-            print("All checks passed. Detection models and the local rewrite model are ready.")
+        print("All checks passed. Detection models are ready; rewrites will use the configured external API.")
     else:
         print("Some checks failed. Download or configure missing models before running.")
         print("  HuggingFace repos:")
         print("    desklib/ai-text-detector-v1.01")
         print("    sentence-transformers/paraphrase-mpnet-base-v2  (downloads to sentence-transformers-paraphrase-mpnet-base-v2/)")
-        print("    Qwen/Qwen3-VL-8B-Instruct  (if using local rewrite backend)")
-        print("  Or re-run:  trileaf onboard")
+        print("  Or re-run:  trileaf setup")
     print("=================================================")
 
     if not all_ok:

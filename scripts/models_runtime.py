@@ -69,15 +69,6 @@ def _env_first(*names: str, default: str = "") -> str:
     return default
 
 
-def _normalize_rewrite_backend(raw: str) -> str:
-    value = (raw or "local").strip().lower()
-    if value in {"openai_api", "api", "remote"}:
-        return "external"
-    if value not in {"local", "external"}:
-        return "local"
-    return value
-
-
 def _parse_json_dict(raw: str) -> Dict[str, str]:
     if not raw.strip():
         return {}
@@ -100,20 +91,6 @@ def _parse_json_object(raw: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
     return {}
-
-
-def _merge_case_insensitive_headers(
-    base: Dict[str, str],
-    override: Dict[str, str],
-) -> Dict[str, str]:
-    merged = dict(base)
-    for name, value in override.items():
-        target = name.lower()
-        for existing in list(merged.keys()):
-            if existing.lower() == target:
-                del merged[existing]
-        merged[name] = value
-    return merged
 
 
 def _merge_json_objects(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -142,31 +119,10 @@ DEVICE = select_device()
 # ─────────────────────────────────────────────────────────────────────────────
 DESKLIB_MODEL_PATH  = str(_app_config.resolve_model_path("desklib"))
 MPNET_MODEL_PATH    = str(_app_config.resolve_model_path("mpnet"))
-REWRITE_BACKEND     = _normalize_rewrite_backend(
-    _rewrite_config.first_defined(
-        os.getenv("REWRITE_BACKEND"),
-        _rewrite_config.legacy_env_first("backend"),
-        "local",
-    ) or "local"
-)
-REWRITE_MODEL_PATH  = _resolve(
-    _rewrite_config.first_defined(
-        os.getenv("REWRITE_MODEL_PATH"),
-        _rewrite_config.legacy_env_first("model_path"),
-        "./models/Qwen3-VL-8B-Instruct",
-    ) or "./models/Qwen3-VL-8B-Instruct"
-)
+REWRITE_BACKEND     = "external"
 REWRITE_API_KIND    = (os.getenv("REWRITE_API_KIND") or "openai-chat-completions").strip().lower()
-REWRITE_BASE_URL    = (
-    os.getenv("REWRITE_BASE_URL")
-    or _rewrite_config.legacy_env_first("base_url")
-    or ""
-)
-REWRITE_MODEL       = (
-    os.getenv("REWRITE_MODEL")
-    or _rewrite_config.legacy_env_first("model")
-    or "Qwen3-VL-8B-Instruct"
-)
+REWRITE_BASE_URL    = os.getenv("REWRITE_BASE_URL") or ""
+REWRITE_MODEL       = os.getenv("REWRITE_MODEL") or ""
 REWRITE_PROVIDER_ID = _rewrite_config.normalize_provider_id(os.getenv("REWRITE_PROVIDER_ID", ""))
 REWRITE_API_KEY     = os.getenv("REWRITE_API_KEY", "")
 _REWRITE_API_KEY_CANDIDATES = _rewrite_config.get_provider_env_api_key_candidates(REWRITE_PROVIDER_ID)
@@ -178,7 +134,7 @@ REWRITE_TIMEOUT_S   = float(os.getenv("REWRITE_TIMEOUT_S") or "120")
 REWRITE_TEMPERATURE = float(os.getenv("REWRITE_TEMPERATURE") or "0.7")
 # Disable model thinking/reasoning mode by default to minimise latency and
 # token cost on short-text rewrite tasks.  Set REWRITE_DISABLE_THINKING=false
-# in .env (or as an env var) to re-enable.
+# as an env var to re-enable.
 REWRITE_DISABLE_THINKING: bool = (
     (os.getenv("REWRITE_DISABLE_THINKING") or "true").lower() not in {"false", "0", "no", "off"}
 )
@@ -512,7 +468,7 @@ def run_rewrite_candidate(text: str, style: str = "balanced") -> str:
     if not generated.strip():
         raise RewriteResponseError(
             f"[{style}] Model returned empty output. "
-            "Check that the model loaded correctly and REWRITE_MODEL_PATH is valid."
+            "Check REWRITE_BASE_URL, REWRITE_MODEL, and REWRITE_API_KEY."
         )
 
     result = _extract_rewrite_output(generated, text)
@@ -563,82 +519,6 @@ def run_rewrite_ensemble(text: str) -> List[Dict[str, Any]]:
     return candidates
 
 
-# ─── Local rewrite model internals ───────────────────────────────────────────
-
-
-def _load_local_rewrite_model() -> tuple:
-    with _REWRITE_LOCK:
-        if REWRITE_MODEL_PATH in _REWRITE_CACHE:
-            return _REWRITE_CACHE[REWRITE_MODEL_PATH]
-
-        from transformers import AutoProcessor as _AutoProcessor  # lazy
-        dtype     = torch.bfloat16 if DEVICE == "cuda" else torch.float32
-        processor = _AutoProcessor.from_pretrained(REWRITE_MODEL_PATH, trust_remote_code=True)
-
-        try:
-            from transformers import Qwen3VLForConditionalGeneration as _Qwen3VLForCG
-            model = _Qwen3VLForCG.from_pretrained(REWRITE_MODEL_PATH, dtype=dtype, low_cpu_mem_usage=True)
-        except ImportError:
-            try:
-                from transformers import Qwen2VLForConditionalGeneration as _Qwen2VLForCG
-                model = _Qwen2VLForCG.from_pretrained(REWRITE_MODEL_PATH, dtype=dtype, low_cpu_mem_usage=True)
-            except ImportError:
-                from transformers import AutoModelForVision2Seq, AutoModelForCausalLM  # lazy
-                try:
-                    model = AutoModelForVision2Seq.from_pretrained(
-                        REWRITE_MODEL_PATH, dtype=dtype, low_cpu_mem_usage=True, trust_remote_code=True,
-                    )
-                except (ImportError, AttributeError):
-                    model = AutoModelForCausalLM.from_pretrained(
-                        REWRITE_MODEL_PATH, dtype=dtype, low_cpu_mem_usage=True, trust_remote_code=True,
-                    )
-
-        model.to(DEVICE).eval()
-        _REWRITE_CACHE[REWRITE_MODEL_PATH] = (processor, model)
-        return _REWRITE_CACHE[REWRITE_MODEL_PATH]
-
-
-@torch.no_grad()
-def _local_rewrite_generate(prompt: str, max_new_tokens: int = 1024, temperature: float = REWRITE_TEMPERATURE) -> str:
-    processor, model = _load_local_rewrite_model()
-    messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-    _chat_kwargs: dict = {"tokenize": False, "add_generation_prompt": True}
-    if REWRITE_DISABLE_THINKING:
-        # Qwen3 honours enable_thinking=False by prepending /no_think, which
-        # prevents the model from entering its internal reasoning loop and
-        # substantially cuts latency for short rewrite tasks.
-        # Older models/other architectures silently ignore the kwarg.
-        try:
-            text_in = processor.apply_chat_template(
-                messages, **_chat_kwargs, enable_thinking=False
-            )
-        except TypeError:
-            text_in = processor.apply_chat_template(messages, **_chat_kwargs)
-    else:
-        text_in = processor.apply_chat_template(messages, **_chat_kwargs)
-    inputs    = processor(text=text_in, return_tensors="pt").to(DEVICE)
-    prompt_len = inputs["input_ids"].shape[1]
-    out = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=temperature,
-        top_p=0.9,
-    )
-    # Decode only the newly generated tokens (everything after the prompt).
-    new_token_ids = out[0, prompt_len:]
-    raw_output = processor.decode(new_token_ids, skip_special_tokens=True).strip()
-
-    if REWRITE_DEBUG:
-        _log.debug(
-            "[rewrite-debug] generated %d new tokens; raw output (first 600 chars): %r",
-            len(new_token_ids),
-            raw_output[:600],
-        )
-
-    return raw_output
-
-
 def _resolve_external_endpoint(api_kind: str) -> str:
     base = REWRITE_BASE_URL.rstrip("/")
     normalized = api_kind.strip().lower()
@@ -685,7 +565,7 @@ def _build_external_auth_headers() -> Dict[str, str]:
         warnings.warn(
             f"REWRITE_AUTH_MODE is '{REWRITE_AUTH_MODE}' but REWRITE_API_KEY is empty — "
             "no auth header will be sent. "
-            f"Set REWRITE_API_KEY in .env or env ({api_key_candidates}), or switch auth_mode to 'none'.",
+            f"Link LeafHub ('trileaf config') or set env var ({api_key_candidates}).",
             stacklevel=3,
         )
         return headers
@@ -818,14 +698,12 @@ def _rewrite_api_generate(prompt: str, max_new_tokens: int = 2048, temperature: 
 
 
 def _rewrite_generate(prompt: str, max_new_tokens: int = 2048, temperature: float = REWRITE_TEMPERATURE) -> str:
-    if REWRITE_BACKEND == "external":
-        if not REWRITE_BASE_URL:
-            raise RuntimeError(
-                "REWRITE_BACKEND is 'external' but REWRITE_BASE_URL is not set. "
-                "Set 'base_url' in the active rewrite profile or the REWRITE_BASE_URL env var."
-            )
-        return _rewrite_api_generate(prompt, max_new_tokens, temperature)
-    return _local_rewrite_generate(prompt, max_new_tokens, temperature)
+    if not REWRITE_BASE_URL:
+        raise RuntimeError(
+            "REWRITE_BASE_URL is not set. "
+            "Link a provider via LeafHub ('trileaf config') or set the REWRITE_BASE_URL env var."
+        )
+    return _rewrite_api_generate(prompt, max_new_tokens, temperature)
 
 
 def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -1098,8 +976,6 @@ def preload_models() -> List[Dict[str, Any]]:
         ("desklib", _load_desklib),
         ("mpnet",   _load_mpnet),
     ]
-    if REWRITE_BACKEND == "local":
-        tasks.append(("rewrite_local", _load_local_rewrite_model))
 
     results: List[Dict[str, Any]] = []
     for name, loader in tasks:

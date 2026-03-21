@@ -1,199 +1,141 @@
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 #  Trileaf — Setup (Windows PowerShell)
 #
-#  Usage (first-time):
-#    git clone <repo-url> trileaf
-#    cd trileaf
+#  Canonical setup script. Called directly by developers, or by install.ps1
+#  after cloning the repository.
+#
+#  Usage (after git clone):
 #    powershell -ExecutionPolicy Bypass -File setup.ps1
 #
 #  Options:
-#    -Reinstall          Delete and recreate the .venv
-#    -SkipOnboarding     Skip the interactive model/provider wizard
-#    -Headless           Non-interactive / CI mode: implies -SkipOnboarding.
-#                        Exit code reflects success (0) or failure (non-zero).
-#    -Doctor             Run environment check only, then exit.
-#
-# ─────────────────────────────────────────────────────────────────────────────
+#    -Reinstall       Delete and recreate the .venv
+#    -Headless        Non-interactive / CI mode; skips all prompts
+#    -Doctor          Run environment check only, then exit
+#    -FromInstaller   Internal flag set by install.ps1 (adjusts banner only)
+# ──────────────────────────────────────────────────────────────────────────────
 param(
     [switch]$Reinstall,
-    [switch]$SkipOnboarding,
     [switch]$Headless,
-    [switch]$Doctor
+    [switch]$Doctor,
+    [switch]$FromInstaller
 )
 
 $ErrorActionPreference = "Stop"
 
-# ── ANSI colour helpers ───────────────────────────────────────────────────────
-$SupportsColor = $Host.UI.SupportsVirtualTerminal -and $env:NO_COLOR -eq $null
-function c($code, $text) {
-    if ($SupportsColor) { return "${code}${text}`e[0m" }
-    return $text
-}
-$G = "`e[38;2;0;229;180m"     # green
-$Y = "`e[38;2;255;176;32m"    # yellow
-$R = "`e[38;2;230;57;70m"     # red
-$M = "`e[38;2;110;120;148m"   # muted
-$B = "`e[1m"                  # bold
+# ── Colour helpers ────────────────────────────────────────────────────────────
+$SupportsColor = $Host.UI.SupportsVirtualTerminal -and $null -eq $env:NO_COLOR
+function c($code, $text) { if ($SupportsColor) { return "${code}${text}`e[0m" } return $text }
+$G = "`e[38;2;0;229;180m"; $Y = "`e[38;2;255;176;32m"
+$R = "`e[38;2;230;57;70m"; $M = "`e[38;2;110;120;148m"; $B = "`e[1m"
 
-function ok   ($msg) { Write-Host "$(c $G '✓')  $msg" }
-function info ($msg) { Write-Host "$(c $M '·')  $msg" }
-function warn ($msg) { Write-Host "$(c $Y '!')  $msg" }
-function fail ($msg) { Write-Host "$(c $R '✗')  $msg" -ForegroundColor Red; exit 1 }
+function ok      ($msg) { Write-Host "$(c $G '√')  $msg" }
+function info    ($msg) { Write-Host "$(c $M '·')  $msg" }
+function warn    ($msg) { Write-Host "$(c $Y '!')  $msg" }
+function fail    ($msg) { Write-Host "$(c $R '✗')  $msg" -ForegroundColor Red; exit 1 }
+function section ($t)   { Write-Host ""; Write-Host (c $B "── $t ──") }
 
-function section ($title) {
-    Write-Host ""
-    Write-Host (c $B "── $title ──")
-}
-
-# ── project root ──────────────────────────────────────────────────────────────
-$ScriptDir   = $PSScriptRoot
-$VenvDir     = Join-Path $ScriptDir ".venv"
-$VenvPython  = Join-Path $VenvDir "Scripts\python.exe"
-$VenvPip     = Join-Path $VenvDir "Scripts\pip.exe"
+# ── Project paths ─────────────────────────────────────────────────────────────
+$ScriptDir    = $PSScriptRoot
+$VenvDir      = Join-Path $ScriptDir ".venv"
+$VenvPython   = Join-Path $VenvDir "Scripts\python.exe"
+$VenvPip      = Join-Path $VenvDir "Scripts\pip.exe"
+$TrileafExe   = Join-Path $VenvDir "Scripts\trileaf.exe"
+$ScriptsDir   = Join-Path $VenvDir "Scripts"
 $Requirements = Join-Path $ScriptDir "requirements.txt"
 
-# ── banner ────────────────────────────────────────────────────────────────────
+# ── Banner ────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host (c $B "  Trileaf — Setup")
-Write-Host (c $M "  Creates a Python virtual environment and walks through model/provider setup.")
+if ($FromInstaller) { Write-Host (c $B "  Trileaf — Installing") }
+else                { Write-Host (c $B "  Trileaf — Setup") }
+Write-Host (c $M "  Project dir: $ScriptDir")
 Write-Host ""
 
-# ── Step 1: platform check ────────────────────────────────────────────────────
-section "Step 1 / 4  —  Platform"
+# ── Step 1 / 6 — Platform ────────────────────────────────────────────────────
+section "Step 1 / 6  —  Platform"
 
-if ($IsWindows -eq $false -and $env:OS -notmatch "Windows") {
-    fail "This script is for Windows.  Use setup.sh on macOS/Linux."
+$policy = Get-ExecutionPolicy -Scope Process
+if ($policy -eq "Restricted" -or $policy -eq "AllSigned") {
+    try { Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force }
+    catch { fail "Cannot set execution policy.`n  Run as Administrator: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser" }
 }
 ok "Platform: Windows"
 
-# Ensure scripts can run in this session (execution policy)
-$policy = Get-ExecutionPolicy -Scope Process
-if ($policy -eq "Restricted" -or $policy -eq "AllSigned") {
-    try {
-        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
-        ok "Set execution policy to RemoteSigned for this session"
-    } catch {
-        warn "Could not set execution policy automatically."
-        warn "If pip or venv activation fails, run first:"
-        warn "  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process"
-    }
+# ── Step 2 / 6 — Python ──────────────────────────────────────────────────────
+section "Step 2 / 6  —  Python"
+
+function Is-SufficientVersion ($ver) {
+    if (-not $ver) { return $false }
+    $p = $ver -split '\.'; return ([int]$p[0] -gt 3) -or ([int]$p[0] -eq 3 -and [int]$p[1] -ge 10)
 }
-
-# ── Step 2: find Python 3.10+ ─────────────────────────────────────────────────
-section "Step 2 / 4  —  Python"
-
 function Get-PythonVersion ($cmd) {
     try {
-        $raw = & $cmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $raw) { return $raw.Trim() }
+        $r = & $cmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $r) { return $r.Trim() }
     } catch {}
     return $null
 }
 
-function Is-SufficientVersion ($ver) {
-    if (-not $ver) { return $false }
-    $parts = $ver -split '\.'
-    $major = [int]$parts[0]
-    $minor = [int]$parts[1]
-    return ($major -gt 3) -or ($major -eq 3 -and $minor -ge 10)
-}
-
-$PythonExe = $null
-# Try the Windows py launcher first (supports py -3.12 style)
-foreach ($spec in @("3.13", "3.12", "3.11", "3.10")) {
+$PythonExe = $null; $PythonVersion = $null
+foreach ($spec in @("3.13","3.12","3.11","3.10")) {
     try {
         $v = & py "-$spec" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-        if ($LASTEXITCODE -eq 0 -and (Is-SufficientVersion $v)) {
-            $PythonExe = "py -$spec"
-            $PythonVersion = $v
-            break
-        }
+        if ($LASTEXITCODE -eq 0 -and (Is-SufficientVersion $v)) { $PythonExe = "py -$spec"; $PythonVersion = $v; break }
     } catch {}
 }
-
-# Fall back to python3 / python on PATH
 if (-not $PythonExe) {
-    foreach ($cmd in @("python3", "python")) {
+    foreach ($cmd in @("python3","python")) {
         $v = Get-PythonVersion $cmd
-        if (Is-SufficientVersion $v) {
-            $PythonExe = $cmd
-            $PythonVersion = $v
-            break
-        }
+        if (Is-SufficientVersion $v) { $PythonExe = $cmd; $PythonVersion = $v; break }
     }
 }
-
 if (-not $PythonExe) {
-    fail @"
-Python 3.10+ is required but was not found.
-
-Install it from https://www.python.org/downloads/windows/
-  - Check 'Add Python to PATH' during installation.
-  - The Windows py launcher is installed automatically.
-
-Then re-run:  powershell -ExecutionPolicy Bypass -File setup.ps1
-"@
+    fail "Python 3.10+ not found.`n  Download from https://www.python.org/downloads/windows/`n  Tick 'Add Python to PATH'."
 }
 
-$FullVersion = & ($PythonExe -split ' ')[0] @(($PythonExe -split ' ')[1..99]) `
-    -c "import sys; print(sys.version)" 2>$null
-ok "Python: $PythonExe  ($FullVersion)"
-
-# ── helper: invoke python through the py launcher if needed ───────────────────
-# NOTE: $Args is a PowerShell reserved automatic variable — use $CmdArgs instead.
 function Invoke-Python ([string[]]$CmdArgs) {
     $parts = $PythonExe -split ' ', 2
-    if ($parts.Count -eq 2) {
-        & $parts[0] $parts[1] @CmdArgs
-    } else {
-        & $PythonExe @CmdArgs
-    }
+    if ($parts.Count -eq 2) { & $parts[0] $parts[1] @CmdArgs } else { & $PythonExe @CmdArgs }
 }
 
-# ── Step 3: create / reuse venv ───────────────────────────────────────────────
-section "Step 3 / 4  —  Virtual environment"
+$FullVer = Invoke-Python @("-c", "import sys; print(sys.version)") 2>$null
+ok "Python: $PythonExe  ($FullVer)"
+
+# ── Step 3 / 6 — Virtual environment ─────────────────────────────────────────
+section "Step 3 / 6  —  Virtual environment"
 
 if (Test-Path $VenvDir) {
     if ($Reinstall) {
-        info "Removing existing .venv (--reinstall)"
+        info "Removing existing .venv (-Reinstall) ..."
         Remove-Item -Recurse -Force $VenvDir
-    } elseif (Test-Path $VenvPython) {
-        ok ".venv exists — reusing"
-        info "  (pass -Reinstall to force a clean rebuild)"
+    } elseif (-not (Test-Path $VenvPython)) {
+        warn "Existing .venv appears broken — recreating ..."
+        Remove-Item -Recurse -Force $VenvDir
     } else {
-        warn "Existing .venv appears broken — recreating"
-        Remove-Item -Recurse -Force $VenvDir
+        ok ".venv exists — reusing  (-Reinstall to force rebuild)"
     }
 }
 
 if (-not (Test-Path $VenvDir)) {
     info "Creating .venv ..."
     Invoke-Python @("-m", "venv", $VenvDir)
-    ok ".venv created: $VenvDir"
+    ok ".venv created."
 }
 
-# Upgrade pip
 info "Upgrading pip ..."
 & $VenvPython -m pip install --upgrade pip --quiet
 
-# Install dependencies
-info "Installing dependencies from requirements.txt ..."
-info "  (torch + transformers may take several minutes on first install)"
+info "Installing dependencies ..."
+info "  (first install may take several minutes)"
 Write-Host ""
 & $VenvPip install -r $Requirements
 Write-Host ""
+
+info "Registering 'trileaf' command ..."
+& $VenvPip install -e $ScriptDir --no-deps --quiet
 ok "Dependencies installed."
 
-# Register the 'trileaf' command inside the venv
-info "Registering 'trileaf' CLI command ..."
-& $VenvPip install -e . --no-deps --quiet
-ok "'trileaf' command registered."
-
-# ── Step 4: onboarding wizard ─────────────────────────────────────────────────
-section "Step 4 / 4  —  Onboarding"
-
-# -Headless implies -SkipOnboarding
-if ($Headless) { $SkipOnboarding = $true }
+# ── Step 4 / 6 — PATH ────────────────────────────────────────────────────────
+section "Step 4 / 6  —  PATH"
 
 if ($Doctor) {
     info "Running environment check (-Doctor) ..."
@@ -201,42 +143,70 @@ if ($Doctor) {
     exit $LASTEXITCODE
 }
 
-if ($SkipOnboarding) {
-    if ($Headless) {
-        info "Headless mode — skipping interactive onboarding wizard."
-        info "Run environment check:  .venv\Scripts\python scripts\check_env.py"
-    } else {
-        info "Skipping onboarding wizard (-SkipOnboarding)"
-    }
-} else {
-    $onboardExit = 0
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if (-not $userPath) { $userPath = "" }
+if ($userPath -notlike "*$ScriptsDir*") {
+    [Environment]::SetEnvironmentVariable("Path", "$userPath;$ScriptsDir", "User")
+    info "Added $ScriptsDir to user PATH (takes effect in new terminals)."
+}
+$env:Path = "$ScriptsDir;$env:Path"
+ok "PATH updated."
+
+# ── Step 5 / 6 — LeafHub ─────────────────────────────────────────────────────
+section "Step 5 / 6  —  LeafHub"
+
+# Detect leafhub
+$LeafHubExe = Get-Command leafhub -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+if (-not $LeafHubExe) {
+    info "LeafHub not found — installing (required dependency) ..."
     try {
-        & $VenvPython (Join-Path $ScriptDir "scripts\onboarding.py")
-        $onboardExit = $LASTEXITCODE
+        irm https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.ps1 | iex
     } catch {
-        $onboardExit = 1
+        fail "LeafHub installation failed.`n  Install manually: https://github.com/Rebas9512/Leafhub`n  Then re-run setup.ps1"
     }
-    if ($onboardExit -ne 0) {
-        Write-Host ""
-        warn "Onboarding did not complete (exit code $onboardExit)."
-        warn "Your virtual environment and dependencies are ready."
-        warn "Re-run onboarding at any time with:"
-        warn "  .venv\Scripts\python scripts\onboarding.py"
+    $LeafHubExe = Get-Command leafhub -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    if (-not $LeafHubExe) {
+        fail "LeafHub installed but 'leafhub' not found in PATH.`n  Open a new terminal and re-run: setup.ps1"
+    }
+}
+ok "LeafHub: $LeafHubExe"
+
+# Register Trileaf project (idempotent)
+$registerArgs = @("register", "trileaf", "--path", $ScriptDir)
+if ($Headless) { $registerArgs += "--headless" }
+
+try {
+    & $LeafHubExe @registerArgs
+    if ($LASTEXITCODE -ne 0) { throw "exit $LASTEXITCODE" }
+    ok "LeafHub integration complete."
+} catch {
+    fail "LeafHub registration failed: $_`n  Install LeafHub and retry: https://github.com/Rebas9512/Leafhub"
+}
+
+# ── Step 6 / 6 — Detection models ────────────────────────────────────────────
+section "Step 6 / 6  —  Detection models"
+
+if ($Headless) {
+    info "Headless — skipping model download."
+    info "Run later: trileaf setup"
+} else {
+    Write-Host "  Trileaf needs two detection models $(c $M '(~0.9 GB total)')"
+    Write-Host "  $(c $M '· desklib/ai-text-detector-v1.01     (~0.5 GB)')"
+    Write-Host "  $(c $M '· paraphrase-mpnet-base-v2            (~0.4 GB)')"
+    Write-Host ""
+    $dl = Read-Host "  Download now? [Y/n]"
+    if ($dl -ne "n" -and $dl -ne "N") {
+        & $TrileafExe setup --models-only
+    } else {
+        info "Run later: trileaf setup"
     }
 }
 
-# ── done ──────────────────────────────────────────────────────────────────────
+# ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host (c $B "  Setup complete!")
 Write-Host ""
-Write-Host "  Activate the venv once per terminal session, then use the trileaf command:"
-Write-Host ""
-Write-Host (c $G "    .venv\Scripts\Activate.ps1")
-Write-Host (c $G "    trileaf run              # start the dashboard")
-Write-Host (c $G "    trileaf setup            # re-run model/provider setup")
-Write-Host (c $G "    trileaf config           # manage provider profiles")
-Write-Host (c $G "    trileaf doctor           # environment health check")
-Write-Host ""
-Write-Host "  Or invoke directly without activating:"
-Write-Host (c $M "    .venv\Scripts\trileaf.exe run")
+Write-Host "$(c $G '  trileaf run')      # start the dashboard"
+Write-Host "$(c $G '  trileaf setup')    # download detection models"
+Write-Host "$(c $G '  trileaf doctor')   # environment health check"
 Write-Host ""
