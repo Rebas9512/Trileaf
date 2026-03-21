@@ -18,5 +18,6 @@ Pillow>=10.0.0
 # --- Sentence transformers ---
 sentence-transformers>=3.0.0
 
-# --- LeafHub SDK (credential vault) ---
-leafhub @ git+https://github.com/Rebas9512/Leafhub.git
+# LeafHub SDK is an optional integration — install separately via the LeafHub
+# one-liner (https://github.com/Rebas9512/Leafhub) if you want encrypted vault
+# support.  Trileaf gracefully falls back to .env storage when it is absent.
