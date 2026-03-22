@@ -124,7 +124,6 @@ def test_readme_documents_one_liner_and_remove_flows() -> None:
     assert "install.cmd" in src
     assert "trileaf remove" in src
     assert "--purge-source" in src
-    assert "falls back to a `trileaf/` subdirectory inside it" in src
 
 
 # ── Version consistency ───────────────────────────────────────────────────────

@@ -168,6 +168,9 @@ if [[ -d "$VENV_DIR" ]]; then
     elif [[ ! -x "$VENV_PYTHON" ]]; then
         warn "Existing .venv appears broken — recreating ..."
         rm -rf "$VENV_DIR"
+    elif ! "$VENV_PIP" --version >/dev/null 2>&1; then
+        warn "Existing .venv has stale paths (project directory was moved) — recreating ..."
+        rm -rf "$VENV_DIR"
     else
         ok ".venv exists — reusing  (--reinstall to force rebuild)"
     fi

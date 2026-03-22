@@ -45,7 +45,12 @@ _MANAGED_MODEL_DIR_NAMES = {
 # ── command handlers ──────────────────────────────────────────────────────────
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    """Start the dashboard server."""
+    """Start the dashboard server.
+
+    If the environment check fails on the first attempt, runs setup once as
+    an automatic fallback, then retries.  The retry is not repeated — if it
+    still fails, the error propagates normally.
+    """
     import run as _run
 
     argv: list[str] = []
@@ -53,7 +58,25 @@ def _cmd_run(args: argparse.Namespace) -> None:
         argv += ["--leafhub-alias", args.leafhub_alias]
     if args.reload:
         argv.append("--reload")
-    _run.main(argv)
+
+    try:
+        _run.main(argv)
+    except SystemExit as exc:
+        if exc.code == 0:
+            raise  # clean exit — propagate as-is
+        # Environment check returned a non-zero exit — run setup once as a
+        # fallback, then retry.  _cmd_onboard always raises SystemExit(0) on
+        # completion; catch it so execution can continue to the retry.
+        print(
+            "\n[run] Environment check failed — running setup as fallback (once only) ...",
+            file=sys.stderr,
+        )
+        try:
+            _cmd_onboard(argparse.Namespace())
+        except SystemExit:
+            pass
+        print("[run] Retrying startup after setup ...\n", file=sys.stderr)
+        _run.main(argv)  # if this still fails, the error propagates
 
 
 _LEAFHUB_ALIAS = "rewrite"   # the alias Trileaf queries at runtime
