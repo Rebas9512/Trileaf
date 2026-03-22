@@ -222,6 +222,14 @@ def main(argv: list[str] | None = None):
     ready_url = os.getenv("DASHBOARD_READY_URL", f"http://{host}:{port}/api/ready")
     reload_enabled = args.reload or os.getenv("DASHBOARD_RELOAD", "").lower() in {"1", "true", "yes", "on"}
 
+    # Resolve credentials before anything else — this injects REWRITE_API_KEY,
+    # REWRITE_BASE_URL, REWRITE_MODEL and REWRITE_CREDENTIAL_SOURCE into the
+    # process environment so that both the doctor check and the normal startup
+    # env check see the real resolved state, not empty env vars.
+    if args.leafhub_alias:
+        os.environ["LEAFHUB_ALIAS"] = args.leafhub_alias
+    _load_rewrite_credentials()
+
     if args.doctor:
         from scripts import check_env
 
@@ -230,10 +238,6 @@ def main(argv: list[str] | None = None):
         except SystemExit:
             raise
         raise SystemExit(0)
-
-    if args.leafhub_alias:
-        os.environ["LEAFHUB_ALIAS"] = args.leafhub_alias
-    _load_rewrite_credentials()
 
     run_env_check()
     set_device_hint()

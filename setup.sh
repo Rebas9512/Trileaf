@@ -193,7 +193,7 @@ fi
 info "Installing dependencies ..."
 info "  (first install may take several minutes)"
 "$VENV_PIP" install -r "$REQUIREMENTS" --quiet
-"$VENV_PIP" install -e "$SCRIPT_DIR" --no-deps --quiet
+"$VENV_PIP" install -e "$SCRIPT_DIR[leafhub]" --quiet
 ok "Dependencies installed."
 
 # ── Step 4 / 6 — CLI registration ────────────────────────────────────────────
@@ -238,9 +238,33 @@ fi
 # ── Step 5 / 6 — LeafHub ─────────────────────────────────────────────────────
 section "Step 5 / 6  —  LeafHub"
 
-# Source register.sh from local leafhub install, falling back to curl.
-# register.sh provides: leafhub_setup_project <name> [path]
-if ! eval "$(leafhub shell-helper 2>/dev/null)"; then
+# Load register.sh — provides leafhub_setup_project().
+#
+# Resolution order (v2 standard, 2026-03-21):
+#   1. leafhub shell-helper        — system leafhub in PATH (fast path)
+#   2. $VENV_DIR/bin/leafhub       — pip-installed in venv (offline fallback;
+#                                    avoids curl when leafhub is already a
+#                                    pip dependency but not yet in PATH, e.g.
+#                                    during a LeafHub-initiated fresh install
+#                                    or a clean one-liner install)
+#   3. leafhub_dist/register.sh    — local distributed copy (offline fallback
+#                                    for subsequent setups after first registration)
+#   4. GitHub curl                 — first-time bootstrap, network required
+#
+# NOTE: the original `if ! eval "$(cmd)"` pattern is NOT used here because
+# `eval ""` always exits 0, making the fallback unreachable when leafhub is
+# absent from PATH.  Instead we capture output first and check it is non-empty.
+_lh_content=""
+if _lh_content="$(leafhub shell-helper 2>/dev/null)" && [[ -n "$_lh_content" ]]; then
+    eval "$_lh_content"
+elif [[ -x "$VENV_DIR/bin/leafhub" ]] \
+    && _lh_content="$("$VENV_DIR/bin/leafhub" shell-helper 2>/dev/null)" \
+    && [[ -n "$_lh_content" ]]; then
+    eval "$_lh_content"
+elif [[ -f "$SCRIPT_DIR/leafhub_dist/register.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/leafhub_dist/register.sh"
+else
     info "Fetching LeafHub installer ..."
     _TMP_REG="$(mktemp)"
     if ! curl -fsSL \
@@ -253,10 +277,11 @@ if ! eval "$(leafhub shell-helper 2>/dev/null)"; then
     source "$_TMP_REG"
     rm -f "$_TMP_REG"
 fi
+unset _lh_content
 
 [[ "$HEADLESS" == "true" ]] && export LEAFHUB_HEADLESS=1
 
-leafhub_setup_project "trileaf" "$SCRIPT_DIR" \
+leafhub_setup_project "trileaf" "$SCRIPT_DIR" "rewrite" \
     || fail "LeafHub registration failed.\n  Install LeafHub and retry: https://github.com/Rebas9512/Leafhub"
 
 ok "LeafHub integration complete."

@@ -65,7 +65,17 @@ def main() -> None:
         __version__ = "unknown"
     print(f"=== Trileaf v{__version__} — Environment Check ===")
 
+    # REWRITE_CREDENTIAL_SOURCE is set by rewrite_config.resolve_credentials().
+    # When called via run.py it is already set (credentials resolved first).
+    # When called standalone (setup.sh --doctor, or direct script invocation)
+    # it may be absent — resolve now so the check reflects the real state.
     credential_source = os.getenv("REWRITE_CREDENTIAL_SOURCE", "")
+    if not credential_source:
+        try:
+            _result = rewrite_config.resolve_credentials()
+            credential_source = _result.get("credential_source", "none")
+        except Exception:
+            credential_source = "none"
 
     # ── Device ────────────────────────────────────────────────────────────────
     try:
@@ -96,7 +106,7 @@ def main() -> None:
 
     print()
 
-    if credential_source:
+    if credential_source and credential_source != "none":
         print(f"Credential source:    {credential_source}")
 
     # ── Detection model paths ─────────────────────────────────────────────────
@@ -128,22 +138,32 @@ def main() -> None:
     api_url   = os.getenv("REWRITE_BASE_URL") or ""
     api_model = os.getenv("REWRITE_MODEL") or ""
     api_key   = os.getenv("REWRITE_API_KEY", "")
-    leafhub_alias = os.getenv("LEAFHUB_ALIAS") or ""
+    # LEAFHUB_ALIAS is the alias passed to hub.get_key() during credential
+    # resolution.  Default is "rewrite" (matches LeafHub registration default).
+    leafhub_alias = os.getenv("LEAFHUB_ALIAS") or "rewrite"
     api_key_candidates = rewrite_config.format_env_var_list(
         rewrite_config.get_provider_env_api_key_candidates(provider_id)
     )
     print()
-    cred_label = "via LeafHub" if leafhub_alias else (credential_source or "env var")
+    # credential_source is authoritative (set by resolve_credentials()).
+    # Use it directly instead of inferring from LEAFHUB_ALIAS presence, which
+    # was unreliable when the alias was not explicitly passed on the CLI.
+    _CRED_LABELS = {
+        "leafhub": "via LeafHub",
+        "env":     "env var",
+        "none":    "none",
+    }
+    cred_label = _CRED_LABELS.get(credential_source, credential_source or "none")
     print(f"Rewrite backend: external  (credential: {cred_label})")
     if provider_id:
         print(f"  provider:  {provider_id}")
     print(f"  api_kind:  {api_kind}")
     print(f"  base_url:  {api_url or '(not set — run: trileaf config)'}")
     print(f"  model:     {api_model or '(not set)'}")
-    if leafhub_alias:
-        print(f"  api_key:   via LeafHub alias='{leafhub_alias}' ({credential_source or 'pending'})")
+    if credential_source == "leafhub":
+        print(f"  api_key:   via LeafHub (alias '{leafhub_alias}')")
     elif api_key:
-        print(f"  api_key:   set ({credential_source or 'env'})")
+        print(f"  api_key:   set ({credential_source})")
     else:
         print(f"  api_key:   (not set; run 'trileaf config' or set {api_key_candidates})")
     if not api_url:
@@ -152,7 +172,7 @@ def main() -> None:
     if not api_model:
         print("  ERROR: REWRITE_MODEL is required")
         all_ok = False
-    if not api_key and not leafhub_alias:
+    if not api_key and credential_source != "leafhub":
         print(
             "  ERROR: rewrite API key is required — "
             f"link LeafHub ('trileaf config') or set {api_key_candidates}"

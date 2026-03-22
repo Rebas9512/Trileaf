@@ -15,7 +15,7 @@ except ModuleNotFoundError as exc:
 
 
 DEFAULT_MODEL_ID = "sentence-transformers/paraphrase-mpnet-base-v2"
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # download_scripts/ → scripts/ → project root
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "models" / "sentence-transformers-paraphrase-mpnet-base-v2"
 REQUIRED_FILES = [
     "1_Pooling/config.json",

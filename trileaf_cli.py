@@ -56,25 +56,216 @@ def _cmd_run(args: argparse.Namespace) -> None:
     _run.main(argv)
 
 
+_LEAFHUB_ALIAS = "rewrite"   # the alias Trileaf queries at runtime
+
+
+def _ensure_leafhub_pip() -> None:
+    """Install the leafhub pip package into the running venv if it is absent.
+
+    Uses sys.executable so the install always targets the same venv that is
+    running trileaf — no risk of installing into the wrong interpreter.
+    """
+    try:
+        import leafhub  # noqa: F401
+        return  # already present
+    except ImportError:
+        pass
+
+    print("[setup] leafhub pip package not found — installing into current venv ...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-e", f"{_ROOT}[leafhub]", "--quiet"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(
+            f"[!] leafhub install failed:\n{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        print(
+            "    Manual fix:  pip install -e '.[leafhub]'  (from Trileaf directory)",
+            file=sys.stderr,
+        )
+    else:
+        print("[setup] leafhub installed.")
+
+
+def _read_dotfile() -> dict:
+    """Read .leafhub and return its parsed content, or {} on any error."""
+    import json as _json
+    try:
+        return _json.loads((_ROOT / ".leafhub").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _ensure_leafhub_binding() -> bool:
+    """Verify the 'rewrite' alias is bound in LeafHub; auto-repair if missing.
+
+    Token-first: the project name is read from .leafhub rather than hardcoded,
+    so renaming the project in LeafHub does not break this function.
+
+    Returns True when credentials are fully resolved, False otherwise.
+
+    States handled:
+      .leafhub absent              → not registered; return False.
+      token valid, alias bound     → return True immediately.
+      token valid, alias missing   → auto-bind to first available provider.
+      token invalid / project gone → project was deleted; print re-register guide.
+      no providers in vault        → print guidance; return False.
+      leafhub binary absent        → print guidance; return False.
+    """
+    import shutil
+
+    _leafhub_token = _ROOT / ".leafhub"
+    if not _leafhub_token.exists():
+        return False
+
+    # ── Read project name from dotfile (token-first; never hardcoded) ─────────
+    dotfile = _read_dotfile()
+    project_name = dotfile.get("project") or "trileaf"
+
+    leafhub_bin = shutil.which("leafhub")
+    if not leafhub_bin:
+        print(
+            "[setup] LeafHub binary not found — cannot verify binding.\n"
+            "    Install LeafHub first, then re-run trileaf setup.",
+            file=sys.stderr,
+        )
+        return False
+
+    # ── Fast path: try full credential resolution ─────────────────────────────
+    try:
+        from scripts.rewrite_config import _try_leafhub  # type: ignore[attr-defined]
+        if _try_leafhub():
+            return True
+    except Exception:
+        pass
+
+    # ── Check project health via `leafhub project show <name>` ────────────────
+    show_result = subprocess.run(
+        [leafhub_bin, "project", "show", project_name],
+        capture_output=True, text=True,
+    )
+
+    if show_result.returncode != 0 or "not found" in show_result.stdout.lower():
+        # Project was deleted from LeafHub vault but .leafhub file still exists.
+        print(
+            f"[!] LeafHub: project '{project_name}' not found in vault.\n"
+            f"    The .leafhub token is stale — re-register to create a fresh link:\n"
+            f"      leafhub register {project_name} --path {_ROOT} --alias {_LEAFHUB_ALIAS}\n"
+            f"    Or run the full setup:  ./setup.sh",
+            file=sys.stderr,
+        )
+        return False
+
+    if _LEAFHUB_ALIAS in show_result.stdout:
+        # Binding exists — credentials failed for a different reason (token mismatch, etc.)
+        return False
+
+    # ── Alias missing — attempt auto-bind ─────────────────────────────────────
+    print(f"[setup] alias '{_LEAFHUB_ALIAS}' is not bound — attempting auto-bind ...")
+
+    prov_result = subprocess.run(
+        [leafhub_bin, "provider", "list"],
+        capture_output=True, text=True,
+    )
+    provider_name: str | None = None
+    for line in prov_result.stdout.splitlines():
+        stripped = line.strip()
+        first = stripped.split()[0] if stripped else ""
+        if (
+            stripped
+            and not stripped.startswith("─")
+            and not stripped.startswith("Label")
+            and not first.endswith(":")     # skip section headers like "Providers:"
+        ):
+            provider_name = first
+            break
+
+    if not provider_name:
+        print(
+            f"[!] No providers in LeafHub vault — cannot auto-bind.\n"
+            f"    Add one:  leafhub manage  (Web UI at http://localhost:8765)\n"
+            f"    Then:     leafhub project bind {project_name}"
+            f" --alias {_LEAFHUB_ALIAS} --provider <name>",
+            file=sys.stderr,
+        )
+        return False
+
+    bind_result = subprocess.run(
+        [leafhub_bin, "project", "bind", project_name,
+         "--alias", _LEAFHUB_ALIAS, "--provider", provider_name],
+        capture_output=True, text=True,
+    )
+    if bind_result.returncode == 0:
+        print(f"[setup] {bind_result.stdout.strip()}")
+        return True
+
+    print(
+        f"[!] Auto-bind failed: {bind_result.stderr.strip()}\n"
+        f"    Manual fix: leafhub project bind {project_name}"
+        f" --alias {_LEAFHUB_ALIAS} --provider {provider_name}",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _cmd_onboard(args: argparse.Namespace) -> None:
-    """Download detection models (env check + model download only)."""
+    """Ensure pip dependencies, detection models, and LeafHub binding are all in place.
+
+    Steps:
+      1. Install leafhub pip package if missing (uses current venv's Python).
+      2. Run environment check (informational only — always proceed regardless of result).
+      3. Download desklib and mpnet models to <project_root>/models/.
+      4. Verify 'rewrite' alias is bound in LeafHub; auto-bind to first available
+         provider if missing.
+    """
+    # ── 1. pip dependencies ───────────────────────────────────────────────────
+    _ensure_leafhub_pip()
+
+    # ── 2. environment check (informational) ──────────────────────────────────
     from scripts import check_env
 
     print("\nChecking environment ...")
     try:
         check_env.main()
-    except SystemExit as exc:
-        if exc.code not in (None, 0):
-            raise
+    except SystemExit:
+        pass  # env check during setup is informational only — always proceed to downloads
 
-    # Model downloads
+    # ── 3. model downloads ────────────────────────────────────────────────────
+    # The download scripts use argparse on sys.argv.  Clear sys.argv to just
+    # the script name so the trileaf subcommand ("setup", "--yes", etc.) is not
+    # misinterpreted by the download argparse.
     from scripts.download_scripts import (
         desklib_detector_download,
         mpnet_download,
     )
-    yes = getattr(args, "yes", False) or getattr(args, "models_only", False)
-    desklib_detector_download.main(yes=yes)
-    mpnet_download.main(yes=yes)
+    _saved_argv = sys.argv[:]
+    sys.argv = sys.argv[:1]
+    try:
+        desklib_detector_download.main()
+        mpnet_download.main()
+    finally:
+        sys.argv = _saved_argv
+
+    # ── 4. LeafHub binding verification + auto-repair ─────────────────────────
+    _leafhub_token = _ROOT / ".leafhub"
+    if not _leafhub_token.exists():
+        print(
+            "\n[setup] Models downloaded.  LeafHub is not linked yet.\n"
+            "    Run the full setup:  ./setup.sh\n"
+            "    Or link manually:   trileaf config\n"
+        )
+    elif _ensure_leafhub_binding():
+        print("\n[setup] Done — models downloaded, LeafHub linked and provider bound.")
+    else:
+        print(
+            "\n[setup] Models downloaded.  Credentials still need attention.\n"
+            "    Check:   leafhub project show trileaf\n"
+            "    Verify:  trileaf doctor\n"
+        )
+
     raise SystemExit(0)
 
 

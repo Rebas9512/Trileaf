@@ -103,12 +103,12 @@ The installer (`install.sh` / `install.ps1`) and setup script (`setup.sh` / `set
 |------|--------------|
 | 1. Platform | Detect OS, check requirements |
 | 2. Python | Find Python 3.10+, validate version |
-| 3. Virtual environment | Create `.venv`, install all Python dependencies |
+| 3. Virtual environment | Create `.venv`, install all Python dependencies **including `leafhub` pip package** (`pip install -e ".[leafhub]"`) |
 | 4. CLI registration | Register `trileaf` command on your PATH |
-| 5. **LeafHub integration** | Install LeafHub (if needed) and register this project |
+| 5. **LeafHub integration** | Install LeafHub (if needed), register this project, and bind the rewrite provider |
 | 6. Detection models | Prompt to download the two scoring models (~0.9 GB) |
 
-Step 5 is fully automatic — you don't need to install LeafHub separately. See [LeafHub Integration](#3-leafhub-integration) for details.
+Step 3 installs `leafhub` as a pip dependency in the venv — this is required for `open_sdk()` to work at runtime. Step 5 is fully automatic. See [LeafHub Integration](#3-leafhub-integration) for details.
 
 ### After install
 
@@ -118,11 +118,22 @@ trileaf run       # start the dashboard
 
 Open **http://127.0.0.1:8001** in your browser.
 
-If you skipped model download during setup, download them now:
+If you skipped model download during setup, or if credentials are not resolving, run:
 
 ```bash
-trileaf setup     # download detection models (desklib + mpnet)
+trileaf setup
 ```
+
+`trileaf setup` is a self-repair command. It runs four steps in sequence:
+
+| Step | What it does |
+|------|--------------|
+| 1. pip check | Installs `leafhub` pip package into `.venv` if missing |
+| 2. env check | Reports environment status (informational only — never aborts) |
+| 3. model download | Downloads desklib + mpnet to `models/` (skips files already present) |
+| 4. binding check | Reads project name from `.leafhub` (token-first — not hardcoded), checks `rewrite` alias; auto-binds if missing; detects stale tokens and prints re-register guide |
+
+It can be run at any time and independently of credential configuration.
 
 Verify everything is working:
 
@@ -135,7 +146,7 @@ trileaf doctor    # full environment and configuration health check
 | Command | What it does |
 |---------|-------------|
 | `trileaf run` | Start the dashboard server |
-| `trileaf setup` | Download detection models (first-time or re-download) |
+| `trileaf setup` | Self-repair: install pip deps, download models, verify LeafHub binding |
 | `trileaf config` | Show LeafHub status, project binding, and credential info |
 | `trileaf weight` | Show or update Pareto utility weights |
 | `trileaf update` | Pull the latest version from git and refresh packages |
@@ -176,15 +187,24 @@ Trileaf uses [LeafHub](https://github.com/Rebas9512/Leafhub) for secure API key 
 
 ### How the integration works
 
-During `setup.sh` (Step 5), Trileaf automatically:
+During `setup.sh`, Trileaf automatically:
 
-1. Detects whether LeafHub is installed; installs it if not.
-2. Registers this Trileaf project in LeafHub (`leafhub register trileaf --path <dir>`).
-3. If no API providers are configured, opens the provider setup wizard.
-4. Binds a provider to the project under the alias `"rewrite"`.
-5. Copies `leafhub_probe.py` into the project root for runtime detection.
+| Step | What happens |
+|------|-------------|
+| **venv** (Step 3) | `pip install -e ".[leafhub]"` — installs the `leafhub` pip package into `.venv` |
+| **LeafHub** (Step 5) | Installs LeafHub binary if absent |
+| | `leafhub register trileaf --path <dir> --alias rewrite` — creates project, binds provider |
+| | Writes `leafhub_dist/` into project root (offline fallback for subsequent setups) |
 
-After setup, a `.leafhub` token file lives in the project root (chmod 600, git-ignored). On every startup, Trileaf reads this file to retrieve your API key from the encrypted vault — no key ever stored in any config file.
+Three artefacts live in the project root after setup:
+
+| File / Dir | Purpose |
+|---|---|
+| `.leafhub` | Project token (chmod 600, git-ignored) — read by `detect()` at startup |
+| `leafhub_dist/` | Integration module: `probe.py` (detection), `register.sh` (shell helper) |
+| `.venv/` | Contains the `leafhub` pip package needed by `open_sdk()` |
+
+On every startup, Trileaf calls `detect()` → `open_sdk()` → `hub.get_key("rewrite")` to retrieve the API key from the encrypted vault — no key ever stored in any config file.
 
 ### What the vault manages for you
 
@@ -200,6 +220,25 @@ The vault stores:
 - Provider config: `base_url`, `model`, `api_format`, `auth_mode`
 
 At startup, Trileaf resolves all of these from the vault automatically.
+
+### Troubleshooting `credentials: none`
+
+Run `trileaf setup` first — it automatically repairs the three most common causes (pip package, models, binding). If the problem persists, diagnose manually:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `[!] leafhub pip package not installed` in stderr | `leafhub` pip not installed in venv | `trileaf setup` (auto-installs), or manually: `pip install -e ".[leafhub]"` |
+| `Bindings: (none)` in `leafhub project show <name>` | Provider not bound | `trileaf setup` (auto-binds), or manually: `leafhub project bind <name> --alias rewrite --provider <name>` |
+| Binding exists but alias is `default` not `rewrite` | Registered without `--alias rewrite` | `leafhub project bind <name> --alias rewrite --provider <name>` |
+| `.leafhub` file missing | Project not registered | `leafhub register <name> --path <dir> --alias rewrite` |
+| `trileaf setup` prints "project not found in vault" | `.leafhub` token is stale — project was deleted from LeafHub vault then re-registered under a new name, or the vault was reset | `leafhub register <name> --path <dir> --alias rewrite` (use the name shown in the error message) |
+| Project registered as a different name (e.g. `trile` instead of `trileaf`) | Name mismatch at registration time | `trileaf setup` reads the project name from `.leafhub` automatically — run it to auto-bind using the actual registered name |
+
+**The alias `rewrite` is fixed** — Trileaf's runtime code always calls `hub.get_key("rewrite")`. Any binding under a different alias (e.g. `"default"`) will not be found. Always register with `--alias rewrite`.
+
+**Project name is read from `.leafhub`** — `trileaf setup` never hardcodes the project name. If the project was registered under any name (e.g. `trile`, `my-trileaf`), the binding check and auto-bind will use whatever name is in the `.leafhub` file.
+
+Run `trileaf doctor` to see which checks fail.
 
 ### Managing credentials
 
@@ -256,7 +295,17 @@ Download (runs automatically during setup, or manually):
 trileaf setup
 ```
 
-The models are stored in `models/` inside the install directory and are git-ignored.
+The models are stored in `models/` inside the install directory (`<install_dir>/models/`) and are git-ignored.
+
+`trileaf setup` runs an environment check first, but that check is **informational only** — setup always proceeds to download the models regardless of whether credentials are configured. You can safely run `trileaf setup` before configuring LeafHub.
+
+### Troubleshooting model downloads
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `trileaf doctor` reports models missing after `trileaf setup` | Earlier version had a path bug — models landed in `scripts/models/` instead of `models/` | Re-run `trileaf setup`; delete `scripts/models/` if it exists |
+| Download starts but `trileaf setup` aborts early | Credential warnings triggered an early exit | Update Trileaf (`trileaf update`) and re-run — env check is now informational |
+| `huggingface_hub` not found | Missing Python dependency | `pip install -r requirements.txt` inside `.venv` |
 
 ---
 
@@ -446,7 +495,10 @@ Trileaf/
 │
 ├── tests/                             # pytest test suite (157+ tests)
 ├── models/                            # Downloaded model weights (git-ignored)
-└── leafhub/                           # leafhub_probe.py (copied here at setup time)
+└── leafhub_dist/                      # LeafHub integration module (written at setup time)
+    ├── __init__.py                    #   Python package entrypoint
+    ├── probe.py                       #   Stdlib-only runtime detection (detect() → open_sdk())
+    └── register.sh                    #   Shell integration module (leafhub_setup_project)
 ```
 
 ---

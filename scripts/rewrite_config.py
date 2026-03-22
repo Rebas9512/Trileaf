@@ -125,11 +125,32 @@ def _try_leafhub(project_dir: Path | None = None) -> dict[str, str] | None:
 
     Returns a dict of REWRITE_* env var values to inject, or None if LeafHub
     is not available or not linked.
+
+    Silent-failure distinction:
+    - not found / not ready  → return None silently (no dotfile, not linked)
+    - found but key empty    → print a warning; the project IS linked but the
+                               alias has no binding yet.  This is a different
+                               problem from "not linked" and requires a
+                               different fix (leafhub project bind …).
     """
+    # Import preference order (v2 standard, 2026-03-21):
+    #   1. leafhub.probe      — installed pip package (full SDK, preferred)
+    #   2. leafhub_dist.probe — local distributed copy in project root
+    #                           (stdlib-only fallback when pip package absent)
+    #
+    # leafhub_dist/ lives at PROJECT_ROOT, which is not automatically on
+    # sys.path in editable installs (only named packages are exposed).
+    # Add it temporarily so the fallback import can succeed.
     try:
         from leafhub.probe import detect
     except ImportError:
-        return None
+        _root = str(PROJECT_ROOT)
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        try:
+            from leafhub_dist.probe import detect  # type: ignore[no-redef]
+        except ImportError:
+            return None
 
     found = detect(project_dir=project_dir or PROJECT_ROOT)
     if not found.ready:
@@ -140,6 +161,12 @@ def _try_leafhub(project_dir: Path | None = None) -> dict[str, str] | None:
         hub = found.open_sdk()
         api_key = hub.get_key(alias)
         if not api_key:
+            print(
+                f"\n[!] LeafHub: project is linked but alias '{alias}' has no provider binding.\n"
+                f"    Bind one with:  leafhub project bind <project> --alias {alias} --provider <name>\n"
+                f"    Or re-run:      leafhub register <project> --path <dir> --alias {alias}\n",
+                file=sys.stderr,
+            )
             return None
 
         result: dict[str, str] = {"REWRITE_API_KEY": api_key}
@@ -169,11 +196,28 @@ def _try_leafhub(project_dir: Path | None = None) -> dict[str, str] | None:
 
         return result
     except Exception as _exc:
-        if "InvalidToken" in type(_exc).__name__:
-            import sys
+        exc_type = type(_exc).__name__
+        if "InvalidToken" in exc_type:
             print(
                 "\n[!] LeafHub: token in .leafhub is invalid or expired.\n"
                 "    Re-link with:  trileaf config\n",
+                file=sys.stderr,
+            )
+        elif "AliasNotBound" in exc_type:
+            print(
+                f"\n[!] LeafHub: project is linked but alias '{alias}' has no provider binding.\n"
+                f"    Bind one with:  leafhub project bind <project> --alias {alias} --provider <name>\n"
+                f"    Or re-run:      leafhub register <project> --path <dir> --alias {alias}\n",
+                file=sys.stderr,
+            )
+        elif isinstance(_exc, ImportError):
+            # open_sdk() triggered a lazy import of a sub-dependency that is
+            # missing.  The leafhub package itself is installed (we got past
+            # the detect import), but one of its optional dependencies is not.
+            print(
+                f"\n[!] LeafHub: a dependency failed to import inside open_sdk(): {_exc}\n"
+                "    Try reinstalling:  pip install -e '.[leafhub]'  (from Trileaf directory)\n"
+                "    Or re-run:         trileaf setup\n",
                 file=sys.stderr,
             )
         return None
@@ -223,8 +267,21 @@ def resolve_credentials(project_dir: Path | None = None) -> dict[str, Any]:
                 credential_source = f"env:{env_name}"
                 break
 
+    # Publish credential_source into the environment so that check_env.py
+    # (which runs in the same process after this call) can read the resolved
+    # value without duplicating the resolution logic or re-probing LeafHub.
+    # REWRITE_CREDENTIAL_SOURCE is set here and only here; downstream code
+    # must not set it manually.
+    os.environ["REWRITE_CREDENTIAL_SOURCE"] = credential_source
+
     return {
-        "source":            "leafhub" if leafhub else "env",
+        # "source" describes which credential path was *attempted* first.
+        # When LeafHub is active it is "leafhub"; when only env vars were
+        # checked (regardless of whether they were found) it is "env"; when
+        # neither produced a key it is "none".
+        "source":            "leafhub" if leafhub else (
+                                 "env" if credential_source not in ("none", "") else "none"
+                             ),
         "credential_source": credential_source,
         "leafhub_active":    leafhub is not None,
     }
