@@ -6,7 +6,6 @@ __pycache__/
 .env
 .env.*
 .leafhub
-leafhub_probe.py
 .claude/
 
 # Virtual environment
@@ -18,8 +17,13 @@ dist/
 build/
 *.whl
 
-# LeafHub local directory (probe copy or local dev install)
+# LeafHub runtime artefacts (written by setup.sh / trileaf setup — not for distribution)
+# leafhub_dist/  — integration module: probe.py + register.sh (stdlib-only fallback)
+# leafhub/       — legacy path (v1)
+# leafhub_probe.py — legacy single-file probe (v1)
+leafhub_dist/
 leafhub/
+leafhub_probe.py
 
 # Reference / local-only directories (not for distribution)
 openclaw/
