@@ -1,5 +1,5 @@
-# ──────────────────────────────────────────────────────────────────────────────
-#  Trileaf — Windows One-liner Installer
+# ------------------------------------------------------------------------------
+#  Trileaf -- Windows One-liner Installer
 #
 #  irm https://raw.githubusercontent.com/Rebas9512/Trileaf/main/install.ps1 | iex
 #
@@ -12,7 +12,7 @@
 #  Environment variables:
 #    TRILEAF_DIR          Override the install directory
 #    TRILEAF_REPO_URL     Override the git clone URL
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 param(
     [string]$InstallDir = "",
     [switch]$Headless
@@ -29,8 +29,8 @@ $RepoUrl = if ($env:TRILEAF_REPO_URL) { $env:TRILEAF_REPO_URL } `
 $ESC = [char]0x1b
 $GREEN = "${ESC}[38;2;0;229;180m"; $RED = "${ESC}[38;2;230;57;70m"
 $MUTED = "${ESC}[38;2;110;120;148m"; $BOLD = "${ESC}[1m"; $NC = "${ESC}[0m"
-function Write-Ok($msg)   { Write-Host "${GREEN}√${NC}  $msg" }
-function Write-Info($msg) { Write-Host "${MUTED}·${NC}  $msg" }
+function Write-Ok($msg)   { Write-Host "${GREEN}+${NC}  $msg" }
+function Write-Info($msg) { Write-Host "${MUTED}.${NC}  $msg" }
 function Write-Fail($msg) { Write-Host "${RED}x${NC}  $msg"; exit 1 }
 
 function Test-DirHasEntries([string]$Dir) {
@@ -38,7 +38,7 @@ function Test-DirHasEntries([string]$Dir) {
     return $null -ne (Get-ChildItem -Force -LiteralPath $Dir | Select-Object -First 1)
 }
 
-# ── Select install directory ──────────────────────────────────────────────────
+# -- Select install directory --------------------------------------------------
 if (-not $InstallDir) {
     if ($env:TRILEAF_DIR) {
         $InstallDir = $env:TRILEAF_DIR
@@ -68,25 +68,25 @@ if ($InstallDir.TrimEnd('\') -eq $resolvedConfig.TrimEnd('\')) {
 # Redirect into subdirectory if target is non-empty and not a git repo
 if (-not (Test-Path (Join-Path $InstallDir ".git"))) {
     if ((Test-Path $InstallDir -PathType Container) -and (Test-DirHasEntries $InstallDir)) {
-        Write-Info "Target is non-empty — using subdirectory: $InstallDir\trileaf"
+        Write-Info "Target is non-empty -- using subdirectory: $InstallDir\trileaf"
         $InstallDir = [IO.Path]::GetFullPath((Join-Path $InstallDir "trileaf"))
     }
 }
 
-# ── Banner ────────────────────────────────────────────────────────────────────
+# -- Banner --------------------------------------------------------------------
 Write-Host ""
-Write-Host "${BOLD}  Trileaf — Installer${NC}"
+Write-Host "${BOLD}  Trileaf -- Installer${NC}"
 Write-Host "${MUTED}  Install path: $InstallDir${NC}"
 Write-Host ""
 
-# ── Prerequisites ─────────────────────────────────────────────────────────────
+# -- Prerequisites -------------------------------------------------------------
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Fail "git is required.`n  Install: winget install Git.Git  or  https://git-scm.com"
 }
 
-# ── Clone / update ────────────────────────────────────────────────────────────
+# -- Clone / update ------------------------------------------------------------
 if (Test-Path (Join-Path $InstallDir ".git")) {
-    Write-Info "Existing installation found — updating..."
+    Write-Info "Existing installation found -- updating..."
     git -C $InstallDir pull --ff-only --quiet
     Write-Ok "Updated."
 } else {
@@ -95,12 +95,12 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
     Write-Ok "Cloned."
 }
 
-# ── Write install metadata ────────────────────────────────────────────────────
+# -- Write install metadata ----------------------------------------------------
 New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
 @{ install_method = "one_liner"; install_dir = $InstallDir } |
     ConvertTo-Json | Set-Content -Path $InstallMetaPath -Encoding UTF8
 
-# ── Delegate to setup.ps1 ────────────────────────────────────────────────────
+# -- Delegate to setup.ps1 ----------------------------------------------------
 $SetupPs1 = Join-Path $InstallDir "setup.ps1"
 if (-not (Test-Path $SetupPs1)) { Write-Fail "setup.ps1 not found in $InstallDir." }
 

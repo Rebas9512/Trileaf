@@ -1,5 +1,5 @@
-# ──────────────────────────────────────────────────────────────────────────────
-#  Trileaf — Setup (Windows PowerShell)
+# ------------------------------------------------------------------------------
+#  Trileaf -- Setup (Windows PowerShell)
 #
 #  Canonical setup script. Called directly by developers, or by install.ps1
 #  after cloning the repository.
@@ -12,7 +12,7 @@
 #    -Headless        Non-interactive / CI mode; skips all prompts
 #    -Doctor          Run environment check only, then exit
 #    -FromInstaller   Internal flag set by install.ps1 (adjusts banner only)
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 param(
     [switch]$Reinstall,
     [switch]$Headless,
@@ -22,20 +22,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# ── Colour helpers ────────────────────────────────────────────────────────────
+# -- Colour helpers ------------------------------------------------------------
 $SupportsColor = $Host.UI.SupportsVirtualTerminal -and $null -eq $env:NO_COLOR
 $ESC = [char]0x1b
 function c($code, $text) { if ($SupportsColor) { return "${code}${text}${ESC}[0m" } return $text }
 $G = "${ESC}[38;2;0;229;180m"; $Y = "${ESC}[38;2;255;176;32m"
 $R = "${ESC}[38;2;230;57;70m"; $M = "${ESC}[38;2;110;120;148m"; $B = "${ESC}[1m"
 
-function ok      ($msg) { Write-Host "$(c $G '√')  $msg" }
-function info    ($msg) { Write-Host "$(c $M '·')  $msg" }
+function ok      ($msg) { Write-Host "$(c $G '+')  $msg" }
+function info    ($msg) { Write-Host "$(c $M '.')  $msg" }
 function warn    ($msg) { Write-Host "$(c $Y '!')  $msg" }
-function fail    ($msg) { Write-Host "$(c $R '✗')  $msg" -ForegroundColor Red; exit 1 }
-function section ($t)   { Write-Host ""; Write-Host (c $B "── $t ──") }
+function fail    ($msg) { Write-Host "$(c $R 'x')  $msg" -ForegroundColor Red; exit 1 }
+function section ($t)   { Write-Host ""; Write-Host (c $B "-- $t --") }
 
-# ── Project paths ─────────────────────────────────────────────────────────────
+# -- Project paths -------------------------------------------------------------
 $ScriptDir    = $PSScriptRoot
 $VenvDir      = Join-Path $ScriptDir ".venv"
 $VenvPython   = Join-Path $VenvDir "Scripts\python.exe"
@@ -44,15 +44,15 @@ $TrileafExe   = Join-Path $VenvDir "Scripts\trileaf.exe"
 $ScriptsDir   = Join-Path $VenvDir "Scripts"
 $Requirements = Join-Path $ScriptDir "requirements.txt"
 
-# ── Banner ────────────────────────────────────────────────────────────────────
+# -- Banner --------------------------------------------------------------------
 Write-Host ""
-if ($FromInstaller) { Write-Host (c $B "  Trileaf — Installing") }
-else                { Write-Host (c $B "  Trileaf — Setup") }
+if ($FromInstaller) { Write-Host (c $B "  Trileaf -- Installing") }
+else                { Write-Host (c $B "  Trileaf -- Setup") }
 Write-Host (c $M "  Project dir: $ScriptDir")
 Write-Host ""
 
-# ── Step 1 / 6 — Platform ────────────────────────────────────────────────────
-section "Step 1 / 6  —  Platform"
+# -- Step 1 / 6 -- Platform ----------------------------------------------------
+section "Step 1 / 6  --  Platform"
 
 $policy = Get-ExecutionPolicy -Scope Process
 if ($policy -eq "Restricted" -or $policy -eq "AllSigned") {
@@ -61,8 +61,8 @@ if ($policy -eq "Restricted" -or $policy -eq "AllSigned") {
 }
 ok "Platform: Windows"
 
-# ── Step 2 / 6 — Python ──────────────────────────────────────────────────────
-section "Step 2 / 6  —  Python"
+# -- Step 2 / 6 -- Python ------------------------------------------------------
+section "Step 2 / 6  --  Python"
 
 function Is-SufficientVersion ($ver) {
     if (-not $ver) { return $false }
@@ -101,18 +101,18 @@ function Invoke-Python ([string[]]$CmdArgs) {
 $FullVer = Invoke-Python @("-c", "import sys; print(sys.version)") 2>$null
 ok "Python: $PythonExe  ($FullVer)"
 
-# ── Step 3 / 6 — Virtual environment ─────────────────────────────────────────
-section "Step 3 / 6  —  Virtual environment"
+# -- Step 3 / 6 -- Virtual environment -----------------------------------------
+section "Step 3 / 6  --  Virtual environment"
 
 if (Test-Path $VenvDir) {
     if ($Reinstall) {
         info "Removing existing .venv (-Reinstall) ..."
         Remove-Item -Recurse -Force $VenvDir
     } elseif (-not (Test-Path $VenvPython)) {
-        warn "Existing .venv appears broken — recreating ..."
+        warn "Existing .venv appears broken -- recreating ..."
         Remove-Item -Recurse -Force $VenvDir
     } else {
-        ok ".venv exists — reusing  (-Reinstall to force rebuild)"
+        ok ".venv exists -- reusing  (-Reinstall to force rebuild)"
     }
 }
 
@@ -135,8 +135,8 @@ info "Registering 'trileaf' command ..."
 & $VenvPip install -e $ScriptDir --no-deps --quiet
 ok "Dependencies installed."
 
-# ── Step 4 / 6 — PATH ────────────────────────────────────────────────────────
-section "Step 4 / 6  —  PATH"
+# -- Step 4 / 6 -- PATH --------------------------------------------------------
+section "Step 4 / 6  --  PATH"
 
 if ($Doctor) {
     info "Running environment check (-Doctor) ..."
@@ -153,13 +153,13 @@ if ($userPath -notlike "*$ScriptsDir*") {
 $env:Path = "$ScriptsDir;$env:Path"
 ok "PATH updated."
 
-# ── Step 5 / 6 — LeafHub ─────────────────────────────────────────────────────
-section "Step 5 / 6  —  LeafHub"
+# -- Step 5 / 6 -- LeafHub -----------------------------------------------------
+section "Step 5 / 6  --  LeafHub"
 
 # Detect leafhub
 $LeafHubExe = Get-Command leafhub -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 if (-not $LeafHubExe) {
-    info "LeafHub not found — installing (required dependency) ..."
+    info "LeafHub not found -- installing (required dependency) ..."
     try {
         irm https://raw.githubusercontent.com/Rebas9512/Leafhub/main/install.ps1 | iex
     } catch {
@@ -184,16 +184,16 @@ try {
     fail "LeafHub registration failed: $_`n  Install LeafHub and retry: https://github.com/Rebas9512/Leafhub"
 }
 
-# ── Step 6 / 6 — Detection models ────────────────────────────────────────────
-section "Step 6 / 6  —  Detection models"
+# -- Step 6 / 6 -- Detection models --------------------------------------------
+section "Step 6 / 6  --  Detection models"
 
 if ($Headless) {
-    info "Headless — skipping model download."
+    info "Headless -- skipping model download."
     info "Run later: trileaf setup"
 } else {
     Write-Host "  Trileaf needs two detection models $(c $M '(~0.9 GB total)')"
-    Write-Host "  $(c $M '· desklib/ai-text-detector-v1.01     (~0.5 GB)')"
-    Write-Host "  $(c $M '· paraphrase-mpnet-base-v2            (~0.4 GB)')"
+    Write-Host "  $(c $M '. desklib/ai-text-detector-v1.01     (~0.5 GB)')"
+    Write-Host "  $(c $M '. paraphrase-mpnet-base-v2            (~0.4 GB)')"
     Write-Host ""
     $dl = Read-Host "  Download now? [Y/n]"
     if ($dl -ne "n" -and $dl -ne "N") {
@@ -203,7 +203,7 @@ if ($Headless) {
     }
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# -- Done ----------------------------------------------------------------------
 Write-Host ""
 Write-Host (c $B "  Setup complete!")
 Write-Host ""
