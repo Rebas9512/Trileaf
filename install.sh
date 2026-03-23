@@ -115,13 +115,8 @@ if [[ -d "$TRILEAF_DIR/.git" ]]; then
     [[ -z "$branch" ]] && branch="main"
     git -C "$TRILEAF_DIR" reset --hard "origin/$branch" --quiet
     ok "Updated to latest ($branch)."
-elif [[ -d "$TRILEAF_DIR" ]] && [[ -n "$(ls -A "$TRILEAF_DIR" 2>/dev/null)" ]]; then
-    info "Directory exists without .git — removing stale files..."
-    rm -rf "$TRILEAF_DIR"
-    info "Cloning into $TRILEAF_DIR ..."
-    git clone --depth=1 "$REPO_URL" "$TRILEAF_DIR" --quiet
-    ok "Cloned."
 else
+    [[ -e "$TRILEAF_DIR" ]] && { info "Removing stale directory $TRILEAF_DIR ..."; rm -rf "$TRILEAF_DIR"; }
     info "Cloning into $TRILEAF_DIR ..."
     git clone --depth=1 "$REPO_URL" "$TRILEAF_DIR" --quiet
     ok "Cloned."

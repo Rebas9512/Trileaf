@@ -96,8 +96,8 @@ if (Test-Path (Join-Path $InstallDir ".git")) {
     Assert-ExitCode "git reset failed"
     Write-Ok "Updated to latest ($branch)."
 } else {
-    if ((Test-Path $InstallDir -PathType Container) -and (Test-DirHasEntries $InstallDir)) {
-        Write-Info "Directory exists without .git -- removing stale files..."
+    if (Test-Path $InstallDir) {
+        Write-Info "Removing stale directory $InstallDir ..."
         Remove-Item -Recurse -Force $InstallDir
     }
     Write-Info "Cloning into $InstallDir ..."
