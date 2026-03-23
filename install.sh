@@ -89,6 +89,9 @@ fi
 [[ "$TRILEAF_DIR" == "$(normalise_path "$CONFIG_DIR")" ]] && \
     fail "Install directory cannot be $CONFIG_DIR (reserved for Trileaf config)."
 
+# If path is a file (not a directory), remove it
+if [[ -f "$TRILEAF_DIR" ]]; then rm -f "$TRILEAF_DIR"; fi
+
 # If target exists and is non-empty but not a git repo, redirect to subdirectory
 if [[ ! -d "$TRILEAF_DIR/.git" ]] && \
    [[ -d "$TRILEAF_DIR" ]] && dir_has_entries "$TRILEAF_DIR"; then
@@ -110,20 +113,24 @@ command -v git >/dev/null 2>&1 || fail "git is required but not found."
 # ── Clone / update ────────────────────────────────────────────────────────────
 if [[ ! -d "$TRILEAF_DIR/.git" ]] && [[ ! -e "$TRILEAF_DIR" ]]; then
     info "Cloning into $TRILEAF_DIR ..."
-    git clone --depth=1 "$REPO_URL" "$TRILEAF_DIR" --quiet
+    git clone --depth=1 "$REPO_URL" "$TRILEAF_DIR" --quiet \
+        || fail "git clone failed."
     ok "Cloned."
 else
     if [[ ! -d "$TRILEAF_DIR/.git" ]]; then
         info "Directory exists — initialising git..."
-        git -C "$TRILEAF_DIR" init --quiet
+        git -C "$TRILEAF_DIR" init --quiet \
+            || fail "git init failed."
         git -C "$TRILEAF_DIR" remote add origin "$REPO_URL" 2>/dev/null || true
     else
         info "Existing installation found — syncing to latest..."
     fi
-    git -C "$TRILEAF_DIR" fetch origin --depth=1 --quiet
+    git -C "$TRILEAF_DIR" fetch origin --depth=1 --quiet \
+        || fail "git fetch failed."
     branch="$(git -C "$TRILEAF_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
     [[ -z "$branch" ]] && branch="main"
-    git -C "$TRILEAF_DIR" reset --hard "origin/$branch" --quiet
+    git -C "$TRILEAF_DIR" reset --hard "origin/$branch" --quiet \
+        || fail "git reset failed."
     git -C "$TRILEAF_DIR" clean -fd --quiet 2>/dev/null || true
     ok "Synced to latest ($branch)."
 fi
