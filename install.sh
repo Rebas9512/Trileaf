@@ -108,18 +108,24 @@ command -v python3 >/dev/null 2>&1 || \
 command -v git >/dev/null 2>&1 || fail "git is required but not found."
 
 # ── Clone / update ────────────────────────────────────────────────────────────
-if [[ -d "$TRILEAF_DIR/.git" ]]; then
-    info "Existing installation found — syncing to latest..."
-    git -C "$TRILEAF_DIR" fetch origin --quiet
-    branch="$(git -C "$TRILEAF_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
-    [[ -z "$branch" ]] && branch="main"
-    git -C "$TRILEAF_DIR" reset --hard "origin/$branch" --quiet
-    ok "Updated to latest ($branch)."
-else
-    [[ -e "$TRILEAF_DIR" ]] && { info "Removing stale directory $TRILEAF_DIR ..."; rm -rf "$TRILEAF_DIR"; }
+if [[ ! -d "$TRILEAF_DIR/.git" ]] && [[ ! -e "$TRILEAF_DIR" ]]; then
     info "Cloning into $TRILEAF_DIR ..."
     git clone --depth=1 "$REPO_URL" "$TRILEAF_DIR" --quiet
     ok "Cloned."
+else
+    if [[ ! -d "$TRILEAF_DIR/.git" ]]; then
+        info "Directory exists — initialising git..."
+        git init "$TRILEAF_DIR" --quiet
+        git -C "$TRILEAF_DIR" remote add origin "$REPO_URL" 2>/dev/null || true
+    else
+        info "Existing installation found — syncing to latest..."
+    fi
+    git -C "$TRILEAF_DIR" fetch origin --depth=1 --quiet
+    branch="$(git -C "$TRILEAF_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+    [[ -z "$branch" ]] && branch="main"
+    git -C "$TRILEAF_DIR" reset --hard "origin/$branch" --quiet
+    git -C "$TRILEAF_DIR" clean -fdx --quiet 2>/dev/null || true
+    ok "Synced to latest ($branch)."
 fi
 
 # ── Write install metadata ────────────────────────────────────────────────────

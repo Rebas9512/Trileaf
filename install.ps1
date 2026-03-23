@@ -86,24 +86,29 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 
 # -- Clone / update ------------------------------------------------------------
-if (Test-Path (Join-Path $InstallDir ".git")) {
-    Write-Info "Existing installation found -- syncing to latest..."
-    git -C $InstallDir fetch origin --quiet
+$hasGit = Test-Path (Join-Path $InstallDir ".git")
+if (-not $hasGit -and -not (Test-Path $InstallDir)) {
+    Write-Info "Cloning into $InstallDir ..."
+    git clone --depth=1 $RepoUrl $InstallDir --quiet
+    Assert-ExitCode "git clone failed"
+    Write-Ok "Cloned."
+} else {
+    if (-not $hasGit) {
+        Write-Info "Directory exists -- initialising git..."
+        git init $InstallDir --quiet
+        Assert-ExitCode "git init failed"
+        git -C $InstallDir remote add origin $RepoUrl 2>$null
+    } else {
+        Write-Info "Existing installation found -- syncing to latest..."
+    }
+    git -C $InstallDir fetch origin --depth=1 --quiet
     Assert-ExitCode "git fetch failed"
     $branch = (git -C $InstallDir symbolic-ref refs/remotes/origin/HEAD 2>$null) -replace '.*/','';
     if (-not $branch) { $branch = "main" }
     git -C $InstallDir reset --hard "origin/$branch" --quiet
     Assert-ExitCode "git reset failed"
-    Write-Ok "Updated to latest ($branch)."
-} else {
-    if (Test-Path $InstallDir) {
-        Write-Info "Removing stale directory $InstallDir ..."
-        Remove-Item -Recurse -Force $InstallDir
-    }
-    Write-Info "Cloning into $InstallDir ..."
-    git clone --depth=1 $RepoUrl $InstallDir --quiet
-    Assert-ExitCode "git clone failed"
-    Write-Ok "Cloned."
+    git -C $InstallDir clean -fdx --quiet 2>$null
+    Write-Ok "Synced to latest ($branch)."
 }
 
 # -- Write install metadata ----------------------------------------------------
