@@ -56,9 +56,11 @@ jobs:
             echo "$f: ASCII OK"
           done
 
-      - name: setup.sh syntax (Unix)
+      - name: Shell script syntax (Unix)
         if: runner.os != 'Windows'
-        run: bash -n setup.sh
+        run: |
+          bash -n install.sh
+          bash -n setup.sh
 
       - name: setup.sh executable bit
         if: runner.os != 'Windows'

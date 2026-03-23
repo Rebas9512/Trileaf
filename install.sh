@@ -21,7 +21,7 @@ TRILEAF_DIR="${TRILEAF_DIR:-}"
 REPO_URL="${TRILEAF_REPO_URL:-https://github.com/Rebas9512/Trileaf.git}"
 
 # ── Minimal colours (only needed before setup.sh takes over) ──────────────────
-if [[ -n "${NO_COLOR:-}" || "${TERM:-dumb}" == "dumb" ]]; then
+if [[ ! -t 1 || -n "${NO_COLOR:-}" || "${TERM:-dumb}" == "dumb" ]]; then
     BOLD='' GREEN='' RED='' MUTED='' NC=''
 else
     BOLD='\033[1m'
