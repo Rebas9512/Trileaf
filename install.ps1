@@ -32,6 +32,7 @@ $MUTED = "${ESC}[38;2;110;120;148m"; $BOLD = "${ESC}[1m"; $NC = "${ESC}[0m"
 function Write-Ok($msg)   { Write-Host "${GREEN}+${NC}  $msg" }
 function Write-Info($msg) { Write-Host "${MUTED}.${NC}  $msg" }
 function Write-Fail($msg) { Write-Host "${RED}x${NC}  $msg"; exit 1 }
+function Assert-ExitCode($msg) { if ($LASTEXITCODE -ne 0) { Write-Fail "$msg (exit code $LASTEXITCODE)" } }
 
 function Test-DirHasEntries([string]$Dir) {
     if (-not (Test-Path $Dir -PathType Container)) { return $false }
@@ -88,10 +89,16 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 if (Test-Path (Join-Path $InstallDir ".git")) {
     Write-Info "Existing installation found -- updating..."
     git -C $InstallDir pull --ff-only --quiet
+    Assert-ExitCode "git pull failed"
     Write-Ok "Updated."
 } else {
+    if ((Test-Path $InstallDir -PathType Container) -and (Test-DirHasEntries $InstallDir)) {
+        Write-Info "Removing incomplete previous install at $InstallDir ..."
+        Remove-Item -Recurse -Force $InstallDir
+    }
     Write-Info "Cloning into $InstallDir ..."
     git clone --depth=1 $RepoUrl $InstallDir --quiet
+    Assert-ExitCode "git clone failed"
     Write-Ok "Cloned."
 }
 
