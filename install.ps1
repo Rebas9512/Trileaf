@@ -66,7 +66,9 @@ if ($InstallDir.TrimEnd('\') -eq $resolvedConfig.TrimEnd('\')) {
     Write-Fail "Install directory cannot be $ConfigDir (reserved for Trileaf config)."
 }
 
-# Redirect into subdirectory if target is non-empty and not a git repo
+if ((Test-Path $InstallDir) -and -not (Test-Path $InstallDir -PathType Container)) {
+    Remove-Item -Force $InstallDir
+}
 if (-not (Test-Path (Join-Path $InstallDir ".git"))) {
     if ((Test-Path $InstallDir -PathType Container) -and (Test-DirHasEntries $InstallDir)) {
         Write-Info "Target is non-empty -- using subdirectory: $InstallDir\trileaf"
