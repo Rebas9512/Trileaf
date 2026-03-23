@@ -109,7 +109,7 @@ if (-not $hasGit -and -not (Test-Path $InstallDir)) {
     if (-not $branch) { $branch = "main" }
     git -C $InstallDir reset --hard "origin/$branch" --quiet
     Assert-ExitCode "git reset failed"
-    git -C $InstallDir clean -fdx --quiet 2>$null
+    git -C $InstallDir clean -fd --quiet 2>$null
     Write-Ok "Synced to latest ($branch)."
 }
 

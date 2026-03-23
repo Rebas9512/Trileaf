@@ -124,7 +124,7 @@ else
     branch="$(git -C "$TRILEAF_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
     [[ -z "$branch" ]] && branch="main"
     git -C "$TRILEAF_DIR" reset --hard "origin/$branch" --quiet
-    git -C "$TRILEAF_DIR" clean -fdx --quiet 2>/dev/null || true
+    git -C "$TRILEAF_DIR" clean -fd --quiet 2>/dev/null || true
     ok "Synced to latest ($branch)."
 fi
 
