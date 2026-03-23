@@ -19,4 +19,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_PATH%" %*
 set "EXITCODE=%ERRORLEVEL%"
 
 del "%SCRIPT_PATH%" >nul 2>&1
+
+rem Refresh PATH in this CMD session so the new binary is usable immediately.
+if %EXITCODE% equ 0 (
+    endlocal
+    for /f "tokens=2*" %%a in ('reg query "HKCU\Environment" /v Path 2^>nul') do set "PATH=%%b;%PATH%"
+) else (
+    endlocal
+)
 exit /b %EXITCODE%
