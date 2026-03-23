@@ -115,7 +115,7 @@ if [[ ! -d "$TRILEAF_DIR/.git" ]] && [[ ! -e "$TRILEAF_DIR" ]]; then
 else
     if [[ ! -d "$TRILEAF_DIR/.git" ]]; then
         info "Directory exists — initialising git..."
-        git init "$TRILEAF_DIR" --quiet
+        git -C "$TRILEAF_DIR" init --quiet
         git -C "$TRILEAF_DIR" remote add origin "$REPO_URL" 2>/dev/null || true
     else
         info "Existing installation found — syncing to latest..."

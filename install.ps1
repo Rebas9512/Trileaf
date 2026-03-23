@@ -95,7 +95,7 @@ if (-not $hasGit -and -not (Test-Path $InstallDir)) {
 } else {
     if (-not $hasGit) {
         Write-Info "Directory exists -- initialising git..."
-        git init $InstallDir --quiet
+        git -C $InstallDir init --quiet
         Assert-ExitCode "git init failed"
         git -C $InstallDir remote add origin $RepoUrl 2>$null
     } else {
