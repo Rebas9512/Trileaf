@@ -43,6 +43,19 @@ jobs:
           python -c "from scripts import rewrite_config, check_env, chunker, orchestrator; print('scripts import OK')"
 
       # ── Setup script syntax checks ────────────────────────────────────────
+      - name: PS1 ASCII enforcement
+        if: runner.os != 'Windows'
+        run: |
+          for f in install.ps1 setup.ps1; do
+            [ -f "$f" ] || continue
+            if grep -Pq '[^\x00-\x7F]' "$f"; then
+              echo "ERROR: $f contains non-ASCII characters"
+              grep -Pn '[^\x00-\x7F]' "$f"
+              exit 1
+            fi
+            echo "$f: ASCII OK"
+          done
+
       - name: setup.sh syntax (Unix)
         if: runner.os != 'Windows'
         run: bash -n setup.sh
