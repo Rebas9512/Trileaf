@@ -24,9 +24,10 @@ $ErrorActionPreference = "Stop"
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 $SupportsColor = $Host.UI.SupportsVirtualTerminal -and $null -eq $env:NO_COLOR
-function c($code, $text) { if ($SupportsColor) { return "${code}${text}`e[0m" } return $text }
-$G = "`e[38;2;0;229;180m"; $Y = "`e[38;2;255;176;32m"
-$R = "`e[38;2;230;57;70m"; $M = "`e[38;2;110;120;148m"; $B = "`e[1m"
+$ESC = [char]0x1b
+function c($code, $text) { if ($SupportsColor) { return "${code}${text}${ESC}[0m" } return $text }
+$G = "${ESC}[38;2;0;229;180m"; $Y = "${ESC}[38;2;255;176;32m"
+$R = "${ESC}[38;2;230;57;70m"; $M = "${ESC}[38;2;110;120;148m"; $B = "${ESC}[1m"
 
 function ok      ($msg) { Write-Host "$(c $G '√')  $msg" }
 function info    ($msg) { Write-Host "$(c $M '·')  $msg" }

@@ -57,19 +57,21 @@ jobs:
           fi
           echo "setup.sh mode: $mode  ✓"
 
-      - name: setup.ps1 syntax (Windows)
+      - name: PS1 syntax (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $errors = $null
-          $null = [System.Management.Automation.Language.Parser]::ParseFile(
-            "$PWD/setup.ps1", [ref]$null, [ref]$errors
-          )
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            exit 1
+          foreach ($file in @("setup.ps1", "install.ps1")) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              "$PWD/$file", [ref]$null, [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+            Write-Host "$file syntax OK"
           }
-          Write-Host "setup.ps1 syntax OK"
 
       # ── Python test suite ─────────────────────────────────────────────────
       - name: Run tests

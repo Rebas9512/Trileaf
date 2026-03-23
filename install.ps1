@@ -26,8 +26,9 @@ $RepoUrl = if ($env:TRILEAF_REPO_URL) { $env:TRILEAF_REPO_URL } `
            else { "https://github.com/Rebas9512/Trileaf.git" }
 
 # Minimal colour helpers (only needed before setup.ps1 takes over)
-$GREEN = "`e[38;2;0;229;180m"; $RED = "`e[38;2;230;57;70m"
-$MUTED = "`e[38;2;110;120;148m"; $BOLD = "`e[1m"; $NC = "`e[0m"
+$ESC = [char]0x1b
+$GREEN = "${ESC}[38;2;0;229;180m"; $RED = "${ESC}[38;2;230;57;70m"
+$MUTED = "${ESC}[38;2;110;120;148m"; $BOLD = "${ESC}[1m"; $NC = "${ESC}[0m"
 function Write-Ok($msg)   { Write-Host "${GREEN}√${NC}  $msg" }
 function Write-Info($msg) { Write-Host "${MUTED}·${NC}  $msg" }
 function Write-Fail($msg) { Write-Host "${RED}x${NC}  $msg"; exit 1 }
