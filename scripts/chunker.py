@@ -54,22 +54,31 @@ def clean_text(text: str) -> str:
     # 6. Trailing whitespace per line
     text = "\n".join(line.rstrip() for line in text.split("\n"))
 
-    # 7. Collapse 3+ blank lines → 2
+    # 7. Promote standalone line breaks to paragraph breaks.
+    #    In prose input (e.g. from a web textarea), a single Enter marks a
+    #    new paragraph.  Convert any \n that is not part of a \n\n sequence
+    #    so each line is treated as its own paragraph by the chunker.
+    text = re.sub(r"(?<!\n)\n(?!\n)", "\n\n", text)
+
+    # 8. Collapse 3+ blank lines → 2
     text = re.sub(r"\n{3,}", "\n\n", text)
 
-    # 8. Collapse multiple horizontal whitespace to single space
+    # 9. Collapse multiple horizontal whitespace to single space
     text = re.sub(r"[ \t]{2,}", " ", text)
 
-    # 9. Cap egregiously repeated identical punctuation (5+ → 3)
+    # 10. Cap egregiously repeated identical punctuation (5+ → 3)
     text = re.sub(r"([!?.,;:\-~])\1{4,}", lambda m: m.group(1) * 3, text)
 
     return text.strip()
 
 
-# Sentence-ending boundaries (English + Chinese punctuation)
+# Sentence-ending boundaries (English + Chinese punctuation).
+# The no-whitespace alternative only triggers on a capital letter or CJK char
+# (not on '"') so that closing dialogue quotes like tonight?" are not split
+# off from the preceding sentence, which would create spurious quote fragments.
 _SENT_BOUNDARY = re.compile(
     r"(?<=[.!?。！？])\s+"
-    r"|(?<=[.!?。！？])(?=[A-Z\"\u4e00-\u9fff])"
+    r"|(?<=[.!?。！？])(?=[A-Z\u4e00-\u9fff])"
 )
 
 

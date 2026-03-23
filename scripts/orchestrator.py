@@ -436,6 +436,11 @@ async def _process_chunk(
         try:
             _cand_text = await asyncio.to_thread(mr.run_rewrite_candidate, chunk, _style)
             candidates_raw.append({"style": _style, "text": _cand_text})
+            _raw_out = mr._last_raw_output.get(_style, "")
+            await emit_log(
+                f"  [{_style:>12}] raw API output: {_raw_out[:400]!r}",
+                level="info",
+            )
             await broadcast({
                 "type": "rewrite_candidate",
                 "data": {
@@ -448,10 +453,19 @@ async def _process_chunk(
             })
         except Exception as _exc:
             rewrite_error_count += 1
+            _err_str = f"{type(_exc).__name__}: {_exc}"
+            # For HTTP errors include the response body so the cause is visible in the UI.
+            _http_resp = getattr(_exc, "response", None)
+            if _http_resp is not None:
+                try:
+                    _body = _http_resp.text[:400]
+                    _err_str += f" | HTTP {_http_resp.status_code} body: {_body!r}"
+                except Exception:
+                    pass
             candidates_raw.append({
                 "style":               _style,
                 "text":                chunk,
-                "error":               f"{type(_exc).__name__}: {_exc}",
+                "error":               _err_str,
                 "reverted_to_original": True,
             })
             await broadcast({
@@ -465,7 +479,7 @@ async def _process_chunk(
                 },
             })
             await emit_log(
-                f"  [{_style:>12}] {type(_exc).__name__}: {_exc} — using original text for this candidate.",
+                f"  [{_style:>12}] {_err_str} — using original text for this candidate.",
                 level="warn",
             )
 

@@ -928,10 +928,10 @@
     `;
     list.prepend(line);
 
-    while (list.children.length > 8) list.removeChild(list.lastChild);
+    while (list.children.length > 40) list.removeChild(list.lastChild);
 
     card.logCount = (card.logCount || 0) + 1;
-    if (counter) counter.textContent = `${Math.min(card.logCount, 8)} shown`;
+    if (counter) counter.textContent = `${Math.min(card.logCount, 40)} shown`;
   }
 
   // label accepts raw HTML; detail is plain text

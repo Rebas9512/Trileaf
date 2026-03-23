@@ -190,21 +190,17 @@ def _ensure_leafhub_binding() -> bool:
     print(f"[setup] alias '{_LEAFHUB_ALIAS}' is not bound — attempting auto-bind ...")
 
     prov_result = subprocess.run(
-        [leafhub_bin, "provider", "list"],
+        [leafhub_bin, "provider", "list", "--json"],
         capture_output=True, text=True,
     )
     provider_name: str | None = None
-    for line in prov_result.stdout.splitlines():
-        stripped = line.strip()
-        first = stripped.split()[0] if stripped else ""
-        if (
-            stripped
-            and not stripped.startswith("─")
-            and not stripped.startswith("Label")
-            and not first.endswith(":")     # skip section headers like "Providers:"
-        ):
-            provider_name = first
-            break
+    try:
+        import json as _json
+        providers_data = _json.loads(prov_result.stdout)
+        if providers_data:
+            provider_name = providers_data[0].get("label")
+    except Exception:
+        pass
 
     if not provider_name:
         print(

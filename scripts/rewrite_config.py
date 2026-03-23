@@ -183,8 +183,15 @@ def _try_leafhub(project_dir: Path | None = None) -> dict[str, str] | None:
             if getattr(cfg, "api_format", None):
                 result["_LEAFHUB_API_KIND"] = cfg.api_format
             # auth_mode / auth_header (only fill if not already set)
-            if getattr(cfg, "auth_mode", None):
-                result["_LEAFHUB_AUTH_MODE"] = cfg.auth_mode
+            # openai-oauth is an internal LeafHub implementation detail;
+            # at the wire level it is a standard Bearer token.
+            # NOTE: LeafHub SDK's get_config() already maps openai-oauth → bearer,
+            # so this branch is a defensive guard for future code paths.
+            _auth_mode = getattr(cfg, "auth_mode", None) or ""
+            if _auth_mode == "openai-oauth":
+                _auth_mode = "bearer"
+            if _auth_mode:
+                result["_LEAFHUB_AUTH_MODE"] = _auth_mode
             if getattr(cfg, "auth_header", None):
                 result["_LEAFHUB_AUTH_HEADER"] = cfg.auth_header
         except Exception as _cfg_exc:
@@ -250,7 +257,7 @@ def resolve_credentials(project_dir: Path | None = None) -> dict[str, Any]:
             ("_LEAFHUB_AUTH_HEADER", "REWRITE_AUTH_HEADER"),
         ):
             lh_val = leafhub.get(lh_key, "")
-            if lh_val and not os.getenv(env_key):
+            if lh_val:
                 os.environ[env_key] = lh_val
         credential_source = "leafhub"
     elif os.getenv("REWRITE_API_KEY"):

@@ -152,6 +152,10 @@ _DESKLIB_CACHE: Dict[str, Any] = {}
 _MPNET_CACHE:   Dict[str, Any] = {}
 _REWRITE_CACHE: Dict[str, Any] = {}
 
+# Stores the last raw API output per style for diagnostic surfacing in the UI.
+# Written by run_rewrite_candidate before returning; read by the orchestrator.
+_last_raw_output: Dict[str, str] = {}
+
 _DESKLIB_LOCK = threading.Lock()
 _MPNET_LOCK   = threading.Lock()
 _REWRITE_LOCK = threading.Lock()
@@ -226,11 +230,26 @@ def _clean_generated_rewrite(text: str, source_text: str) -> str:
 
     _src = source_text.strip()
     _QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019"
+    _DOUBLE_QUOTES = "\"\u201c\u201d"
+    _SINGLE_QUOTES = "'\u2018\u2019"
     # Don't strip a quote char from the start/end of the rewrite if the source
-    # text itself starts/ends with that character (e.g. dialogue that opens or
-    # closes with a quotation mark).
-    _lstrip = " " + "".join(c for c in _QUOTE_CHARS if not _src.startswith(c))
-    _rstrip = " " + "".join(c for c in _QUOTE_CHARS if not _src.endswith(c))
+    # text itself starts/ends with ANY variant of that quote type (e.g. dialogue
+    # that opens or closes with a quotation mark — the model may freely switch
+    # between straight " and curly \u201c\u201d, so protect all variants).
+    _src_starts_dbl = any(_src.startswith(q) for q in _DOUBLE_QUOTES)
+    _src_starts_sgl = any(_src.startswith(q) for q in _SINGLE_QUOTES)
+    _src_ends_dbl   = any(_src.endswith(q)   for q in _DOUBLE_QUOTES)
+    _src_ends_sgl   = any(_src.endswith(q)   for q in _SINGLE_QUOTES)
+    _lstrip = " " + "".join(
+        c for c in _QUOTE_CHARS
+        if not (_src_starts_dbl and c in _DOUBLE_QUOTES)
+        and not (_src_starts_sgl and c in _SINGLE_QUOTES)
+    )
+    _rstrip = " " + "".join(
+        c for c in _QUOTE_CHARS
+        if not (_src_ends_dbl and c in _DOUBLE_QUOTES)
+        and not (_src_ends_sgl and c in _SINGLE_QUOTES)
+    )
     cleaned = cleaned.lstrip(_lstrip).rstrip(_rstrip)
     cleaned = _enforce_length_guard(cleaned, source_text)
     return cleaned or source_text.strip()
@@ -464,6 +483,7 @@ def run_rewrite_candidate(text: str, style: str = "balanced") -> str:
     # misinterpret them as placeholder syntax (e.g. "Single '}' encountered").
     safe_text   = text.strip().replace("{", "{{").replace("}", "}}")
     generated   = _rewrite_generate(template.format(text=safe_text), temperature=temperature)
+    _last_raw_output[style] = generated  # expose for UI diagnostics
 
     if not generated.strip():
         raise RewriteResponseError(
@@ -519,14 +539,42 @@ def run_rewrite_ensemble(text: str) -> List[Dict[str, Any]]:
     return candidates
 
 
+def _normalize_api_kind(raw: str) -> str:
+    """Normalize API kind strings to canonical hyphenated form."""
+    s = raw.strip().lower().replace("_", "-")
+    if s in {"openai-chat-completions", "openai-completions"}:
+        return "openai-chat-completions"
+    if s == "openai-responses":
+        return "openai-responses"
+    if s == "anthropic-messages":
+        return "anthropic-messages"
+    return s
+
+
+def _get_live_config(env_key: str, fallback: str) -> str:
+    """Read a config value from os.environ, falling back to the module-level constant."""
+    return (os.getenv(env_key) or fallback).strip().lower()
+
+
 def _resolve_external_endpoint(api_kind: str) -> str:
-    base = REWRITE_BASE_URL.rstrip("/")
-    normalized = api_kind.strip().lower()
-    if normalized in {"openai-chat-completions", "openai_chat_completions", "openai-completions"}:
+    live_base = _get_live_config("REWRITE_BASE_URL", REWRITE_BASE_URL)
+    base = live_base.rstrip("/")
+    normalized = _normalize_api_kind(api_kind)
+    if normalized == "openai-chat-completions":
         if base.endswith("/chat/completions"):
             return base
         return base + "/chat/completions"
-    if normalized in {"anthropic-messages", "anthropic_messages"}:
+    if normalized == "openai-responses":
+        # OpenAI Responses API.  Two conventions:
+        #   base = "https://chatgpt.com/backend-api/codex/responses"  → use as-is
+        #   base = "https://api.openai.com/v1"                        → append /responses
+        #   base = "https://api.openai.com"                           → append /v1/responses
+        if base.endswith("/responses"):
+            return base
+        if base.endswith("/v1"):
+            return base + "/responses"
+        return base + "/v1/responses"
+    if normalized == "anthropic-messages":
         # Honour both conventions:
         #   base = "https://api.anthropic.com/v1"     → /messages
         #   base = "https://api.minimax.io/anthropic"  → /v1/messages
@@ -560,7 +608,11 @@ def _build_external_auth_headers() -> Dict[str, str]:
     if REWRITE_AUTH_MODE == "none":
         return headers
 
-    if not REWRITE_API_KEY:
+    # Read the API key dynamically so OAuth token refreshes (done by
+    # resolve_credentials() above) are picked up without a module reload.
+    live_api_key = os.getenv("REWRITE_API_KEY") or REWRITE_API_KEY
+
+    if not live_api_key:
         api_key_candidates = _rewrite_config.format_env_var_list(_REWRITE_API_KEY_CANDIDATES)
         warnings.warn(
             f"REWRITE_AUTH_MODE is '{REWRITE_AUTH_MODE}' but REWRITE_API_KEY is empty — "
@@ -573,17 +625,17 @@ def _build_external_auth_headers() -> Dict[str, str]:
     header_name = REWRITE_AUTH_HEADER.strip()
     if REWRITE_AUTH_MODE == "bearer":
         header_name = header_name or "Authorization"
-        _set_header_case_insensitive(headers, header_name, f"Bearer {REWRITE_API_KEY}")
+        _set_header_case_insensitive(headers, header_name, f"Bearer {live_api_key}")
         return headers
 
     if REWRITE_AUTH_MODE == "x-api-key":
         header_name = header_name or "x-api-key"
-        _set_header_case_insensitive(headers, header_name, REWRITE_API_KEY)
+        _set_header_case_insensitive(headers, header_name, live_api_key)
         return headers
 
     if REWRITE_AUTH_MODE == "raw":
         header_name = header_name or "Authorization"
-        _set_header_case_insensitive(headers, header_name, REWRITE_API_KEY)
+        _set_header_case_insensitive(headers, header_name, live_api_key)
         return headers
 
     raise RuntimeError(f"Unsupported rewrite auth mode: {REWRITE_AUTH_MODE}")
@@ -608,6 +660,122 @@ def _extract_openai_chat_content(payload: Dict[str, Any]) -> str:
     raise RewriteResponseError("Rewrite API response does not contain text content.")
 
 
+def _call_openai_responses_streaming(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
+    """
+    Call the OpenAI Responses API (chatgpt.com/backend-api/codex/responses).
+
+    Tries SSE streaming first (stream=True).  If the endpoint returns a
+    non-SSE JSON body (e.g. the Codex endpoint ignores stream=True on some
+    paths), falls back to parsing the response as a regular Responses API
+    JSON object: output[].content[].text.
+
+    Required payload fields (no temperature/max_output_tokens):
+        model, instructions (str), input (list of message dicts), store=False, stream=True
+    """
+    _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+    r = None
+    for _attempt in range(2):
+        try:
+            r = _requests.post(
+                url, json=payload, headers=headers,
+                stream=True, timeout=REWRITE_TIMEOUT_S,
+            )
+        except _requests.exceptions.ConnectionError as _conn_err:
+            if _attempt == 0:
+                _log.warning("[rewrite] Connection error on attempt 1, retrying: %s", _conn_err)
+                continue
+            raise
+        if _attempt == 0 and r.status_code in _RETRYABLE_STATUS:
+            _log.warning("[rewrite] API returned %s on attempt 1, retrying.", r.status_code)
+            r.close()
+            continue
+        break
+
+    try:
+        return _call_openai_responses_parse(r)
+    finally:
+        r.close()
+
+
+def _call_openai_responses_parse(r) -> str:
+    """Parse a streaming or non-streaming OpenAI Responses API response."""
+    r.raise_for_status()
+
+    if REWRITE_DEBUG:
+        _log.debug(
+            "[rewrite-debug] openai-responses HTTP %s  Content-Type: %s",
+            r.status_code, r.headers.get("content-type", "(none)"),
+        )
+
+    # Collect all non-empty lines so we can attempt SSE parsing first,
+    # then fall back to non-streaming JSON if no SSE events are found.
+    raw_lines: List[str] = []
+    for raw_line in r.iter_lines():
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        raw_lines.append(line)
+        if REWRITE_DEBUG:
+            _log.debug("[rewrite-debug] SSE raw line: %r", line[:300])
+
+    # ── Pass 1: SSE parsing ───────────────────────────────────────────────────
+    parts: List[str] = []
+    for line in raw_lines:
+        if not line.startswith("data:"):
+            continue
+        data_str = line[5:].strip()
+        if data_str == "[DONE]":
+            break
+        try:
+            event = json.loads(data_str)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if event.get("type") == "response.output_text.delta":
+            delta = event.get("delta", "")
+            if isinstance(delta, str):
+                parts.append(delta)
+
+    text = "".join(parts).strip()
+
+    # ── Pass 2: non-streaming JSON fallback ───────────────────────────────────
+    # The chatgpt.com Codex endpoint may return a plain Responses API JSON
+    # body (output[].content[].text) instead of SSE when stream=True is
+    # not honoured.  Parse it as a fallback so rewrites still work.
+    if not text:
+        full_body = "\n".join(raw_lines)
+        if REWRITE_DEBUG:
+            _log.debug(
+                "[rewrite-debug] SSE pass produced no text — trying non-streaming parse. "
+                "Body (first 500): %r", full_body[:500],
+            )
+        try:
+            data = json.loads(full_body)
+            for item in (data.get("output") or []):
+                for block in (item.get("content") or []):
+                    if isinstance(block, dict) and block.get("type") == "output_text":
+                        text += block.get("text", "")
+            text = text.strip()
+            if text and REWRITE_DEBUG:
+                _log.debug(
+                    "[rewrite-debug] non-streaming fallback succeeded (first 400): %r", text[:400],
+                )
+        except (json.JSONDecodeError, ValueError, AttributeError):
+            pass
+
+    if not text:
+        body_preview = "\n".join(raw_lines)[:600]
+        raise RewriteResponseError(
+            "OpenAI Responses API returned no text output. "
+            f"Received {len(raw_lines)} line(s). "
+            f"Response preview: {body_preview!r}"
+        )
+
+    if REWRITE_DEBUG:
+        _log.debug("[rewrite-debug] openai-responses final text (first 400): %r", text[:400])
+
+    return text
+
+
 def _extract_anthropic_content(payload: Dict[str, Any]) -> str:
     content = payload.get("content")
     if not isinstance(content, list):
@@ -626,13 +794,24 @@ def _rewrite_api_generate(prompt: str, max_new_tokens: int = 2048, temperature: 
     if _requests is None:
         raise RuntimeError("requests package not installed.")
 
-    api_kind = REWRITE_API_KIND or "openai-chat-completions"
+    # Refresh credentials before every request so OAuth tokens are never stale.
+    # LeafHub checks expiry internally and only hits the network when a refresh
+    # is actually needed, so this is cheap on the fast path.
+    try:
+        _rewrite_config.resolve_credentials()
+    except Exception as _cred_exc:
+        _log.warning("[rewrite] credential refresh failed (will use cached): %s", _cred_exc)
+
+    # Read config values dynamically from env so that resolve_credentials()
+    # updates (e.g. OAuth token refresh changing api_kind/model) take effect.
+    api_kind = _get_live_config("REWRITE_API_KIND", REWRITE_API_KIND)
+    live_model = _get_live_config("REWRITE_MODEL", REWRITE_MODEL)
     url = _resolve_external_endpoint(api_kind)
     headers = _build_external_auth_headers()
 
-    if api_kind in {"openai-chat-completions", "openai_chat_completions", "openai-completions"}:
+    if _normalize_api_kind(api_kind) == "openai-chat-completions":
         payload = {
-            "model": REWRITE_MODEL,
+            "model": live_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_new_tokens,
             "temperature": temperature,
@@ -642,14 +821,27 @@ def _rewrite_api_generate(prompt: str, max_new_tokens: int = 2048, temperature: 
             # Standard OpenAI GPT endpoints silently ignore unknown fields.
             # User can override via extra_body (merged below).
             payload["enable_thinking"] = False
-    elif api_kind in {"anthropic-messages", "anthropic_messages"}:
+    elif _normalize_api_kind(api_kind) == "openai-responses":
+        # OpenAI Responses API — chatgpt.com/backend-api/codex/responses.
+        # Required: instructions (str), input (list), store=False, stream=True.
+        # NOT supported by this endpoint: temperature, max_output_tokens.
+        # The full rewrite prompt goes in input[0].content; instructions is a
+        # minimal system directive so the field is not left empty (required).
+        payload = {
+            "model": live_model,
+            "instructions": "You are a helpful writing assistant.",
+            "input": [{"role": "user", "content": prompt}],
+            "store": False,
+            "stream": True,
+        }
+    elif _normalize_api_kind(api_kind) == "anthropic-messages":
         # anthropic-version is always required for Anthropic-compatible endpoints.
         if not _has_header_name(headers, "anthropic-version"):
             _set_header_case_insensitive(headers, "anthropic-version", "2023-06-01")
         # Auth header is already set by _build_external_auth_headers() based on
         # REWRITE_AUTH_MODE (bearer for MiniMax, x-api-key for standard Anthropic).
         payload = {
-            "model": REWRITE_MODEL,
+            "model": live_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_new_tokens,
             "temperature": temperature,
@@ -665,6 +857,10 @@ def _rewrite_api_generate(prompt: str, max_new_tokens: int = 2048, temperature: 
         raise RuntimeError(f"Unsupported rewrite API kind: {api_kind}")
 
     payload = _merge_json_objects(payload, REWRITE_EXTRA_BODY)
+
+    # openai-responses uses a dedicated streaming path.
+    if _normalize_api_kind(api_kind) == "openai-responses":
+        return _call_openai_responses_streaming(url, headers, payload)
 
     _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
     r = None
@@ -685,14 +881,14 @@ def _rewrite_api_generate(prompt: str, max_new_tokens: int = 2048, temperature: 
 
     if REWRITE_DEBUG:
         # Log the raw content blocks so we can see what the model actually returned.
-        raw_content = data.get("content") or data.get("choices")
+        raw_content = data.get("choices") or data.get("content")
         _log.debug(
-            "[rewrite-debug] API response status=%s; content/choices (first 600): %r",
+            "[rewrite-debug] API response status=%s; choices/content (first 600): %r",
             r.status_code,
             str(raw_content)[:600],
         )
 
-    if api_kind in {"openai-chat-completions", "openai_chat_completions", "openai-completions"}:
+    if _normalize_api_kind(api_kind) == "openai-chat-completions":
         return _extract_openai_chat_content(data)
     return _extract_anthropic_content(data)
 

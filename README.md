@@ -25,6 +25,16 @@ Scoring uses two local Hugging Face models: [`desklib/ai-text-detector-v1.01`](h
 
 Trileaf uses **[LeafHub](https://github.com/Rebas9512/Leafhub)** for encrypted API key management. LeafHub must be installed and configured before you can run Trileaf. Head to the LeafHub repo to install it and add your provider credentials — the process takes about two minutes.
 
+Trileaf supports three API backends:
+
+| Backend | LeafHub `api_format` | Notes |
+|---------|---------------------|-------|
+| OpenAI Chat Completions | `openai-completions` | OpenAI, Groq, vLLM, any OpenAI-compatible endpoint |
+| OpenAI Responses API | `openai-responses` | ChatGPT Codex endpoint — uses subscription quota, not API credits |
+| Anthropic Messages | `anthropic-messages` | Anthropic, MiniMax (Anthropic-compatible) |
+
+**Using your ChatGPT subscription** — run `leafhub provider login --name codex` to authenticate via OAuth. No API key needed; tokens auto-refresh on every request.
+
 ---
 
 ## Install
@@ -68,6 +78,8 @@ Or let the setup script handle it automatically (runs on first install):
 `trileaf setup` can also be used at any time to self-repair — it installs missing pip dependencies, downloads detection models, and verifies (or auto-repairs) the LeafHub binding.
 
 After registration, `leafhub_dist/LEAFHUB.md` in the Trileaf directory contains the full integration reference, including troubleshooting steps for `credentials: none`.
+
+Credentials are refreshed before every API request, so OAuth token rotation and provider switching take effect immediately without restarting the server.
 
 To switch providers or rotate keys, update them in LeafHub — no changes to Trileaf needed:
 
@@ -194,6 +206,7 @@ Trileaf/
 ├── tests/                             # pytest test suite
 ├── models/                            # Downloaded model weights (git-ignored)
 └── leafhub_dist/                      # LeafHub integration module (auto-generated)
+    ├── __init__.py                    #   Package marker — re-exports detect/register
     ├── probe.py                       #   Stdlib-only runtime detection
     ├── register.sh                    #   Shell function for setup scripts
     ├── LEAFHUB.md                     #   Integration reference and troubleshooting
