@@ -109,9 +109,18 @@ command -v git >/dev/null 2>&1 || fail "git is required but not found."
 
 # ── Clone / update ────────────────────────────────────────────────────────────
 if [[ -d "$TRILEAF_DIR/.git" ]]; then
-    info "Existing installation found — updating..."
-    git -C "$TRILEAF_DIR" pull --ff-only --quiet
-    ok "Updated."
+    info "Existing installation found — syncing to latest..."
+    git -C "$TRILEAF_DIR" fetch origin --quiet
+    branch="$(git -C "$TRILEAF_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+    [[ -z "$branch" ]] && branch="main"
+    git -C "$TRILEAF_DIR" reset --hard "origin/$branch" --quiet
+    ok "Updated to latest ($branch)."
+elif [[ -d "$TRILEAF_DIR" ]] && [[ -n "$(ls -A "$TRILEAF_DIR" 2>/dev/null)" ]]; then
+    info "Directory exists without .git — removing stale files..."
+    rm -rf "$TRILEAF_DIR"
+    info "Cloning into $TRILEAF_DIR ..."
+    git clone --depth=1 "$REPO_URL" "$TRILEAF_DIR" --quiet
+    ok "Cloned."
 else
     info "Cloning into $TRILEAF_DIR ..."
     git clone --depth=1 "$REPO_URL" "$TRILEAF_DIR" --quiet
