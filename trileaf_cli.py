@@ -96,8 +96,8 @@ def _ensure_leafhub_pip() -> None:
 
     print("[setup] leafhub pip package not found — installing into current venv ...")
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", f"{_ROOT}[leafhub]", "--quiet"],
-        capture_output=True,
+        [sys.executable, "-m", "pip", "install", "-e", f"{_ROOT}[leafhub]"],
+        stderr=subprocess.PIPE,
         text=True,
     )
     if result.returncode != 0:
