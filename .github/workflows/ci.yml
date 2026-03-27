@@ -44,11 +44,12 @@ jobs:
 
       - name: Verify leafhub.toml
         shell: bash
-        run: python -c "
-          import tomllib
-          m = tomllib.loads(open('leafhub.toml').read())
-          assert m['project']['name'] == 'trileaf'
-          assert m['bindings'][0]['alias'] == 'rewrite'
+        run: |
+          python -c "
+          import tomllib, pathlib
+          m = tomllib.loads(pathlib.Path('leafhub.toml').read_text())
+          assert m['project']['name'] == 'trileaf', f'name mismatch: {m[\"project\"][\"name\"]}'
+          assert m['bindings'][0]['alias'] == 'rewrite', 'alias mismatch'
           print('leafhub.toml: valid')
           "
 
