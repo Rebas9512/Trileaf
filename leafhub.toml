@@ -1,0 +1,26 @@
+[project]
+name = "trileaf"
+python = ">=3.10"
+
+[[bindings]]
+alias = "rewrite"
+required = true
+env_prefix = "REWRITE"
+capabilities = ["chat"]
+
+[setup]
+post_register = ["trileaf setup --models-only"]
+doctor_cmd = "python scripts/check_env.py"
+repo_url = "https://github.com/Rebas9512/Trileaf.git"
+
+[env_fallbacks]
+rewrite = [
+    "REWRITE_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "XAI_API_KEY",
+    "TOGETHER_API_KEY",
+    "OPENROUTER_API_KEY",
+]

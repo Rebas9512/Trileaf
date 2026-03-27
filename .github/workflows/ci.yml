@@ -40,6 +40,17 @@ jobs:
           pip install dist/*.whl --no-deps
           python -c "import trileaf_cli; print('wheel import OK')"
           python -c "from scripts import rewrite_config, check_env, chunker, orchestrator; print('scripts import OK')"
+          python -c "from scripts.rewrite_config import resolve_credentials, normalize_provider_id, get_provider_env_api_key_candidates; print('rewrite_config API OK')"
+
+      - name: Verify leafhub.toml
+        shell: bash
+        run: python -c "
+          import tomllib
+          m = tomllib.loads(open('leafhub.toml').read())
+          assert m['project']['name'] == 'trileaf'
+          assert m['bindings'][0]['alias'] == 'rewrite'
+          print('leafhub.toml: valid')
+          "
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short

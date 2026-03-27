@@ -77,7 +77,7 @@ Or let the setup script handle it automatically (runs on first install):
 
 `trileaf setup` can also be used at any time to self-repair — it installs missing pip dependencies, downloads detection models, and verifies (or auto-repairs) the LeafHub binding.
 
-After registration, `leafhub_dist/LEAFHUB.md` in the Trileaf directory contains the full integration reference, including troubleshooting steps for `credentials: none`.
+Credential configuration is declared in `leafhub.toml` at the project root. Run `leafhub doctor .` to verify the binding status.
 
 Credentials are refreshed before every API request, so OAuth token rotation and provider switching take effect immediately without restarting the server.
 
@@ -205,12 +205,7 @@ Trileaf/
 │
 ├── tests/                             # pytest test suite
 ├── models/                            # Downloaded model weights (git-ignored)
-└── leafhub_dist/                      # LeafHub integration module (auto-generated)
-    ├── __init__.py                    #   Package marker — re-exports detect/register
-    ├── probe.py                       #   Stdlib-only runtime detection
-    ├── register.sh                    #   Shell function for setup scripts
-    ├── LEAFHUB.md                     #   Integration reference and troubleshooting
-    └── setup_template.sh              #   setup.sh template for new projects
+└── leafhub.toml                       # LeafHub project manifest (alias, fallbacks, hooks)
 ```
 
 ---

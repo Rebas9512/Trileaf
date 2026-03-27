@@ -156,8 +156,13 @@ ok "PATH updated."
 # -- Step 5 / 6 -- LeafHub -----------------------------------------------------
 section "Step 5 / 6  --  LeafHub"
 
-# Detect leafhub
+# Detect leafhub — check system PATH first, then venv Scripts
 $LeafHubExe = Get-Command leafhub -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+if (-not $LeafHubExe) {
+    $VenvLeafhub = Join-Path $ScriptsDir "leafhub.exe"
+    if (-not (Test-Path $VenvLeafhub)) { $VenvLeafhub = Join-Path $ScriptsDir "leafhub" }
+    if (Test-Path $VenvLeafhub) { $LeafHubExe = $VenvLeafhub }
+}
 if (-not $LeafHubExe) {
     info "LeafHub not found -- installing (required dependency) ..."
     try {
@@ -172,8 +177,12 @@ if (-not $LeafHubExe) {
 }
 ok "LeafHub: $LeafHubExe"
 
-# Register Trileaf project (idempotent)
-$registerArgs = @("register", "trileaf", "--path", $ScriptDir)
+# Register Trileaf project — use manifest mode if leafhub.toml exists
+if (Test-Path (Join-Path $ScriptDir "leafhub.toml")) {
+    $registerArgs = @("register", $ScriptDir)
+} else {
+    $registerArgs = @("register", "trileaf", "--path", $ScriptDir, "--alias", "rewrite")
+}
 if ($Headless) { $registerArgs += "--headless" }
 
 try {

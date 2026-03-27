@@ -250,9 +250,7 @@ section "Step 5 / 6  —  LeafHub"
 #                                    pip dependency but not yet in PATH, e.g.
 #                                    during a LeafHub-initiated fresh install
 #                                    or a clean one-liner install)
-#   3. leafhub_dist/register.sh    — local distributed copy (offline fallback
-#                                    for subsequent setups after first registration)
-#   4. GitHub curl                 — first-time bootstrap, network required
+#   3. GitHub curl                 — first-time bootstrap, network required
 #
 # NOTE: the original `if ! eval "$(cmd)"` pattern is NOT used here because
 # `eval ""` always exits 0, making the fallback unreachable when leafhub is
@@ -264,9 +262,6 @@ elif [[ -x "$VENV_DIR/bin/leafhub" ]] \
     && _lh_content="$("$VENV_DIR/bin/leafhub" shell-helper 2>/dev/null)" \
     && [[ -n "$_lh_content" ]]; then
     eval "$_lh_content"
-elif [[ -f "$SCRIPT_DIR/leafhub_dist/register.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "$SCRIPT_DIR/leafhub_dist/register.sh"
 else
     info "Fetching LeafHub installer ..."
     _TMP_REG="$(mktemp)"

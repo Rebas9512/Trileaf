@@ -26,10 +26,11 @@ trileaf = "trileaf_cli:main"
 
 [project.optional-dependencies]
 # LeafHub provides encrypted API key management.
-# Installed automatically by setup.sh; or manually:
-#   pip install "trileaf[leafhub]"
+# leafhub-sdk is the lightweight credential resolution layer (zero deps).
+# Full leafhub package provides vault management (CLI, Web UI, encryption).
 leafhub = [
     "leafhub @ git+https://github.com/Rebas9512/Leafhub.git",
+    "leafhub-sdk @ git+https://github.com/Rebas9512/Leafhub.git#subdirectory=sdk-pkg",
 ]
 
 [project.urls]

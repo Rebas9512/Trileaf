@@ -79,7 +79,16 @@ def _cmd_run(args: argparse.Namespace) -> None:
         _run.main(argv)  # if this still fails, the error propagates
 
 
-_LEAFHUB_ALIAS = "rewrite"   # the alias Trileaf queries at runtime
+def _get_default_alias() -> str:
+    """Read the primary alias from leafhub.toml, fall back to 'rewrite'."""
+    try:
+        from leafhub_sdk.manifest import get_default_alias
+        return get_default_alias(project_dir=_ROOT, fallback="rewrite")
+    except ImportError:
+        pass
+    return "rewrite"
+
+_LEAFHUB_ALIAS = _get_default_alias()
 
 
 def _ensure_leafhub_pip() -> None:

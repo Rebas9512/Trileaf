@@ -17,11 +17,7 @@ dist/
 build/
 *.whl
 
-# LeafHub runtime artefacts (written by setup.sh / trileaf setup — not for distribution)
-# leafhub_dist/  — integration module: probe.py + register.sh (stdlib-only fallback)
-# leafhub/       — legacy path (v1)
-# leafhub_probe.py — legacy single-file probe (v1)
-leafhub_dist/
+# LeafHub legacy artefacts (v1 layout, no longer used)
 leafhub/
 leafhub_probe.py
 
