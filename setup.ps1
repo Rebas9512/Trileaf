@@ -156,7 +156,7 @@ ok "PATH updated."
 # -- Step 5 / 6 -- LeafHub -----------------------------------------------------
 section "Step 5 / 6  --  LeafHub"
 
-# Detect leafhub — check system PATH first, then venv Scripts
+# Detect leafhub -- check system PATH first, then venv Scripts
 $LeafHubExe = Get-Command leafhub -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 if (-not $LeafHubExe) {
     $VenvLeafhub = Join-Path $ScriptsDir "leafhub.exe"
@@ -177,7 +177,7 @@ if (-not $LeafHubExe) {
 }
 ok "LeafHub: $LeafHubExe"
 
-# Register Trileaf project — use manifest mode if leafhub.toml exists
+# Register Trileaf project -- use manifest mode if leafhub.toml exists
 if (Test-Path (Join-Path $ScriptDir "leafhub.toml")) {
     $registerArgs = @("register", $ScriptDir)
 } else {

@@ -46,7 +46,11 @@ jobs:
         shell: bash
         run: |
           python -c "
-          import tomllib, pathlib
+          import sys, pathlib
+          if sys.version_info >= (3, 11):
+              import tomllib
+          else:
+              import tomli as tomllib
           m = tomllib.loads(pathlib.Path('leafhub.toml').read_text())
           assert m['project']['name'] == 'trileaf', f'name mismatch: {m[\"project\"][\"name\"]}'
           assert m['bindings'][0]['alias'] == 'rewrite', 'alias mismatch'

@@ -78,6 +78,24 @@ def format_env_var_list(names: list[str] | tuple[str, ...]) -> str:
     return ", ".join(ordered)
 
 
+def _trim_credential(raw: Optional[str]) -> Optional[str]:
+    """Return *raw* stripped, or ``None`` (with a warning) if it looks like an
+    unresolved env-var placeholder such as ``${MY_KEY}`` or ``$MY_KEY``."""
+    if raw is None:
+        return None
+    val = str(raw).strip()
+    if not val:
+        return None
+    if _ENV_VAR_RE.fullmatch(val):
+        import warnings
+        warnings.warn(
+            f"Credential value looks like an unresolved placeholder: {val!r}",
+            stacklevel=2,
+        )
+        return None
+    return val
+
+
 def first_defined(*values: Optional[str]) -> Optional[str]:
     for value in values:
         if value not in (None, ""):

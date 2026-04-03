@@ -235,6 +235,14 @@ async def on_shutdown() -> None:
                                 _part.cpu()  # move off GPU before deleting
                     del _obj
 
+    # loky (pulled in by scikit-learn → joblib → sentence-transformers) may
+    # leave a reusable-executor semaphore alive.  Shut it down explicitly so
+    # Python's multiprocessing resource_tracker doesn't emit a "leaked
+    # semaphore" warning at exit.
+    with suppress(Exception):
+        from loky import get_reusable_executor
+        get_reusable_executor().shutdown(wait=True, kill_workers=True)
+
     gc.collect()
 
     with suppress(Exception):
