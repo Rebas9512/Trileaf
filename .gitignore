@@ -2,7 +2,6 @@ __pycache__/
 *.py[cod]
 
 # Local credential and provider config — never commit these.
-# Run 'trileaf config' to create/edit .env.
 .env
 .env.*
 .leafhub
@@ -17,16 +16,24 @@ dist/
 build/
 *.whl
 
-# LeafHub legacy artefacts (v1 layout, no longer used)
+# LeafHub legacy artefacts
 leafhub/
 leafhub_probe.py
 
 # Reference / local-only directories (not for distribution)
 openclaw/
 
+# Models (downloaded at setup, ~0.9 GB)
 .cache/
 models/**/.cache/
 models/*
 !models/.gitkeep
 
+# Eval / test artifacts
+eval_results.json
+*.pytest_cache/
+.pytest_cache/
+
+# OS
 .DS_Store
+Thumbs.db

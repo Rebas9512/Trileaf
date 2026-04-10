@@ -39,7 +39,7 @@ jobs:
         run: |
           pip install dist/*.whl --no-deps
           python -c "import trileaf_cli; print('wheel import OK')"
-          python -c "from scripts import rewrite_config, check_env, chunker, orchestrator; print('scripts import OK')"
+          python -c "from scripts import rewrite_config, check_env, chunker, orchestrator_v2, rule_detector, prompt_builder, post_processor, detector_interface; print('scripts import OK')"
           python -c "from scripts.rewrite_config import resolve_credentials, normalize_provider_id, get_provider_env_api_key_candidates; print('rewrite_config API OK')"
 
       - name: Verify leafhub.toml

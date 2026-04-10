@@ -1,16 +1,97 @@
 # Trileaf
 
-**Trileaf** is a writing optimizer that is not locked to a single model. Bring the model you already trust, and use it to improve its own drafts through a standardized local optimization pipeline.
+**Trileaf** is a genre-aware writing humanization pipeline. It takes AI-generated text and rewrites it to sound naturally human-written, adapting its strategy to the genre of the input: academic papers, cover letters, creative fiction, casual messages, or opinion pieces.
 
-It generates an ensemble of rewrite candidates, scores each one on AI-detection probability and semantic fidelity, and uses Pareto-based selection to keep the strongest revision for every chunk. An optional double-pass mode pushes the same text through the pipeline twice, producing writing that feels less uniform and closer to human rhythm.
+It is not locked to a single model. Bring the rewrite model you already trust, and Trileaf wraps it in a structured six-stage pipeline: rule-based detection, AI-score-guided rewriting, multi-candidate selection, and genre-specific humanization with formality calibration.
 
-Scoring uses two local Hugging Face models: [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) for AI-probability estimation and [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) for semantic similarity.
+Scoring uses two local Hugging Face models: [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) for AI-probability estimation and [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) for semantic similarity. The detection model is pluggable via an abstraction layer.
 
 ## Preview
 
-![Trileaf dashboard — input and chunk view](screenshot/Trileafscreenshot1.png)
+**Formal writing** (cover letter, academic) — rule violations highlighted, formality calibration active:
 
-![Trileaf dashboard — output and scoring view](screenshot/Trileafscreenshot2.png)
+![Trileaf — formal writing](screenshot/formalwriting_screenshot.png)
+
+**Narrative writing** (fiction, personal blog) — aggressive humanization, sentence fragments, brand-name grounding:
+
+![Trileaf — narrative writing](screenshot/narrativewriting_screenshot.png)
+
+**Casual writing** (Slack, email to colleagues) — stripped to essentials, fragments, informal tone:
+
+![Trileaf — casual writing](screenshot/casualwriting_screeenshot.png)
+
+---
+
+## How the pipeline works
+
+### Six-stage architecture
+
+```
+Input Text
+  │
+  ▼
+Stage 1  Global Scoring       AI detection score + rule violation analysis + genre detection
+  │
+  ▼
+Stage 2  Sentence Tagging     Per-sentence severity (rule violations + AI heat percentile)
+  │
+  ▼
+Stage 3  Standardized Rewrite Multi-candidate rewrite with genre-aware rules, best candidate selected
+  │
+  ▼
+Stage 4  Stubborn Sentences   Targeted attack on sentences that survived Stage 3 (rewrite / delete / flag)
+  │
+  ▼
+Stage 5  Human Touch          Genre-specific humanization techniques with dynamic budget
+  │
+  ▼
+Stage 6  Formality Calibration Restore appropriate formality for academic/professional text (conditional)
+  │
+  ▼
+Output
+```
+
+### Genre-aware rewriting
+
+Trileaf uses the rewrite model itself to classify the input into one of five genres, then loads genre-specific rules and humanization guidelines:
+
+| Genre | Triggers | Key rewrite strategy |
+|-------|----------|---------------------|
+| **Academic** | Essays, papers, reports, case studies | Break formulaic paragraphs, replace abstract noun chains, delete transition word overuse |
+| **Professional** | Cover letters, formal emails, LinkedIn, proposals | Replace buzzwords with specifics, violate templates, add honest qualifiers |
+| **Casual** | Slack/Teams messages, texts, informal emails | Cut length aggressively, use fragments, drop formality entirely |
+| **Narrative** | Fiction, blogs, personal essays, stories | Cut adjectives, add brand names, sentence fragments, dead time, narrator voice |
+| **Persuasive** | Op-eds, reviews, arguments, commentary | State positions directly, emotional spikes, dismiss weak counterarguments |
+
+A universal rule set applies to all genres (sentence rhythm variation, no dashes, specificity over generality, technique rotation). Genre supplements add genre-specific guidance on top.
+
+### Multi-candidate selection (Stage 3)
+
+Stage 3 generates two rewrite candidates at different temperatures and selects the one with the lowest AI detection score:
+
+```
+Candidate A (temp=0.7)  → detector score + semantic similarity
+Candidate B (temp=0.9)  → detector score + semantic similarity
+→ Select: lowest AI score among viable candidates (semantic > 0.5, length within ±40%)
+```
+
+If the first round doesn't reduce the AI score by at least 15%, a retry round runs with more aggressive prompts and different temperatures. This combines the precision of structured prompts with the exploration benefits of temperature diversity.
+
+### Formality calibration (Stage 6)
+
+For academic and professional text, Stage 5's humanization can sometimes overshoot into informality. Stage 6 runs a conditional formality pass that restores appropriate tone while preserving the rhythm variation and structural changes that fool detectors. If the formality pass increases the AI score by more than 0.05, it is automatically rejected.
+
+For casual, narrative, and persuasive text, Stage 6 is skipped.
+
+### Detection model strategy
+
+AI detection scores guide the pipeline but don't gate it. Even when the detection model has low discrimination (scores clustered in a narrow range), Trileaf uses **percentile ranking** rather than absolute thresholds:
+
+- **AI-hot** (top 20% by score) — needs the most rewriting
+- **AI-warm** (next 30%) — needs attention
+- **Low** (bottom 50%) — light touch
+
+This works regardless of whether the model outputs scores in a 0.3-0.5 range or a 0.1-0.9 range. The detection model interface is pluggable (`BaseDetector` ABC) for easy replacement.
 
 ---
 
@@ -77,8 +158,6 @@ Or let the setup script handle it automatically (runs on first install):
 
 `trileaf setup` can also be used at any time to self-repair — it installs missing pip dependencies, downloads detection models, and verifies (or auto-repairs) the LeafHub binding.
 
-Credential configuration is declared in `leafhub.toml` at the project root. Run `leafhub doctor .` to verify the binding status.
-
 Credentials are refreshed before every API request, so OAuth token rotation and provider switching take effect immediately without restarting the server.
 
 To switch providers or rotate keys, update them in LeafHub — no changes to Trileaf needed:
@@ -108,68 +187,18 @@ Opens the dashboard at **http://127.0.0.1:8001**. If the environment check detec
 | `trileaf setup` | Install dependencies, download models, verify LeafHub binding |
 | `trileaf config` | Show LeafHub status and project binding info |
 | `trileaf doctor` | Full environment and model health check |
-| `trileaf weight` | Show or update Pareto utility weights |
+| `trileaf weight` | Show or update pipeline stage thresholds |
 | `trileaf update` | Pull the latest version from git and refresh packages |
 | `trileaf stop` | Stop the running server |
 | `trileaf remove` | Remove Trileaf, generated files, and PATH entries |
-| `trileaf remove --purge-source` | Also delete the source checkout (manual installs) |
 
 Run `trileaf <command> --help` for per-command options.
 
 ---
 
-## How the pipeline works
-
-### Core idea
-
-Most AI-detection tools exploit statistical patterns characteristic of LLM output: overly uniform sentence length, predictable phrasing, and low perplexity. Trileaf attacks those patterns directly — but the optimizer is the pipeline, not the rewrite model.
-
-If your model can write, it can also refine its own writing more effectively when wrapped in a disciplined system: diverse rewrite prompts, standardized scoring, hard semantic gates, and deterministic candidate selection. Rather than trusting one rewrite attempt, Trileaf turns each chunk into a controlled competition and picks the version that best trades off detectability reduction against meaning preservation.
-
-### Ensemble strategy
-
-Each chunk goes through three parallel rewrites at different temperatures:
-
-| Style | Temperature | What it changes |
-|-------|-------------|-----------------|
-| **Conservative** | 0.45 | Word and phrase substitution only — sentence structure frozen |
-| **Balanced** | 0.70 | Clause reordering, sentence merging/splitting, burstiness injection |
-| **Aggressive** | 0.92 | Deep restructuring — conversational register, varied rhythm, rhetorical devices |
-
-All styles enforce hard factual constraints: facts, numbers, named entities, and core claims must remain unchanged.
-
-### Pareto selection
-
-1. **Hard gate** — candidates that regress on any dimension are dropped (AI score must improve; semantic similarity must exceed 0.65).
-2. **Pareto front + utility score** — among passing candidates, non-dominated sorting is applied across both objectives. A weighted utility score picks the winner:
-
-   ```
-   U = W_AI × ai_gain_z + W_SEM × sem_z − W_RISK × risk_penalty
-   ```
-
-   Default weights: `W_AI = 0.60`, `W_SEM = 0.35`, `W_RISK = 0.05`. Adjustable via `trileaf weight`.
-
-If no candidate passes the gate, the original chunk is kept — the optimizer never silently degrades quality.
-
-### Text modes
-
-| Mode | Chunk size | Best for |
-|------|------------|----------|
-| **Short text** | ~200 chars | Texts up to ~3 000 chars; largest AI-score reduction |
-| **Long text** | ~400 chars | Texts of ~2 000–8 000 chars; preserves rhetorical flow |
-
-### Two-pass optimization
-
-| Mode | Description |
-|------|-------------|
-| **Single Run** | One optimization pass — default |
-| **Double Run** | First-pass output becomes input for the second pass; AI-score deltas reported relative to the original |
-
----
-
 ## Detection models
 
-Two local models score every rewrite candidate. They run locally — no external API:
+Two local models run scoring. They run locally — no external API:
 
 | Model | Size | Role |
 |-------|------|------|
@@ -177,6 +206,8 @@ Two local models score every rewrite candidate. They run locally — no external
 | [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) | ~0.4 GB | Semantic similarity measurement |
 
 Downloaded automatically during install. To re-download: `trileaf setup`.
+
+The detection model is pluggable via `BaseDetector` in `scripts/detector_interface.py`. To swap in a different model, implement the `score_text()` method and update the config.
 
 ---
 
@@ -188,24 +219,28 @@ Trileaf/
 ├── run.py                             # Server launcher
 ├── pyproject.toml                     # Package metadata
 ├── install.sh / install.ps1           # One-liner installers
-├── setup.sh / setup.ps1               # Environment setup scripts
 │
 ├── api/
 │   ├── optimizer_api.py               # FastAPI app + WebSocket
-│   └── static/                        # Dashboard assets
+│   └── static/                        # Dashboard (index.html + app.js)
 │
 ├── scripts/
-│   ├── check_env.py                   # Health check (trileaf doctor)
-│   ├── rewrite_config.py              # Credential resolution
+│   ├── orchestrator_v2.py             # Six-stage pipeline orchestrator
+│   ├── rule_detector.py               # Rule-based AI pattern detection (13 rules)
+│   ├── detector_interface.py          # Pluggable AI detection model abstraction
+│   ├── prompt_builder.py              # Genre-aware prompt construction
+│   ├── post_processor.py              # Deterministic punctuation/whitespace fixes
+│   ├── chunker.py                     # Text cleaning + sentence splitting
+│   ├── models_runtime.py              # Model loading, inference, LLM API calls
+│   ├── rewrite_config.py              # Credential resolution (LeafHub / env)
 │   ├── app_config.py                  # Config (~/.trileaf/config.json)
-│   ├── orchestrator.py                # Pareto-selection pipeline
-│   ├── chunker.py                     # Text cleaning + splitting
-│   ├── models_runtime.py              # Model loading and inference
-│   └── download_scripts/              # HuggingFace downloaders
+│   ├── check_env.py                   # Health check (trileaf doctor)
+│   ├── eval_pipeline.py               # 10-scenario evaluation script
+│   └── download_scripts/              # HuggingFace model downloaders
 │
-├── tests/                             # pytest test suite
+├── tests/                             # pytest test suite (266 tests)
 ├── models/                            # Downloaded model weights (git-ignored)
-└── leafhub.toml                       # LeafHub project manifest (alias, fallbacks, hooks)
+└── leafhub.toml                       # LeafHub project manifest
 ```
 
 ---

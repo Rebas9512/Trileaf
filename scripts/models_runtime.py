@@ -355,188 +355,47 @@ def run_desklib(text: str) -> float:
     return float(torch.sigmoid(logit[0, 0]).item())
 
 
-# ─── Rewrite ensemble ─────────────────────────────────────────────────────────
+# ─── Rewrite ─────────────────────────────────────────────────────────────────
 
-REWRITE_STYLES = ("conservative", "balanced", "aggressive")
-
-# Per-style inference temperatures.  Conservative uses a lower temperature for
-# focused, predictable edits; aggressive uses a higher temperature to unlock
-# more varied restructuring.  Override via env vars if needed.
-_STYLE_TEMPERATURES: Dict[str, float] = {
-    "conservative": float(os.getenv("REWRITE_TEMP_CONSERVATIVE", "0.45")),
-    "balanced":     float(os.getenv("REWRITE_TEMP_BALANCED",     "0.70")),
-    "aggressive":   float(os.getenv("REWRITE_TEMP_AGGRESSIVE",   "0.92")),
-}
-
-_REWRITE_PROMPTS: Dict[str, str] = {
-    # ── Conservative ──────────────────────────────────────────────────────────
-    # Scope: word / phrase substitutions only.  Sentence structure is frozen.
-    "conservative": (
-        "You are a copy editor making minimal, surface-level changes only.\n\n"
-        "TASK: Lightly polish the text so it sounds slightly more natural and less formulaic.\n\n"
-        "STRICT RULES — violating any rule is a failure:\n"
-        "1. Change ONLY individual word choices and small phrases. "
-        "Do NOT alter sentence structure.\n"
-        "2. Do NOT reorder, merge, split, or drop any sentence.\n"
-        "3. Do NOT change paragraph order or add/remove transition words.\n"
-        "4. Every fact, number, named entity, and logical connective must remain identical.\n"
-        "5. Do not add or remove any information whatsoever.\n"
-        "6. Output length must stay within ±10 % of the original character count.\n\n"
-        "RESPONSE FORMAT — strictly enforced:\n"
-        "Output exactly one JSON object. No text before it, no text after it, "
-        "no markdown fences, no extra keys.\n"
-        "The first character of your response MUST be '{{'. "
-        "The last character MUST be '}}'.\n"
-        "Required schema: {{\"rewrite\": \"<your lightly edited text>\"}}\n"
-        "If your rewritten text contains double-quote characters, escape each one "
-        "with a backslash inside the JSON value (write \\\" for each \").\n\n"
-        "Text:\n{text}\n"
-    ),
-    # ── Balanced ──────────────────────────────────────────────────────────────
-    # Scope: moderate structural changes — clause reordering, sentence merging /
-    # splitting, varied openings, anti-AI phrasing, burstiness injection.
-    "balanced": (
-        "You are a sharp blogger rewriting a passage for a general audience.\n\n"
-        "TASK: Rewrite so it reads like something a knowledgeable person actually "
-        "wrote — not a polished AI draft. Moderate structural changes are welcome.\n\n"
-        "STYLE GUIDELINES:\n"
-        "• Vary sentence length deliberately: drop in a short punchy sentence "
-        "every few lines, then follow with a longer flowing one.\n"
-        "• Contractions are fine where they sound natural (it's, don't, can't, we're).\n"
-        "• Replace or rephrase any of these on sight — they signal AI-generated text:\n"
-        "  \"moreover\", \"furthermore\", \"it is worth noting\", \"it is important to\",\n"
-        "  \"delve into\", \"nuanced\", \"multifaceted\", \"pivotal\", \"in today's world\",\n"
-        "  \"navigate\", \"comprehensive\", \"notably\", \"in conclusion\".\n"
-        "• Rephrase clause openings so consecutive sentences don't start the same way.\n"
-        "• Don't over-explain — if a point is clear from context, move on.\n\n"
-        "HARD RULES:\n"
-        "• Keep all facts, numbers, named entities, and core claims exactly as-is.\n"
-        "• Do not add or remove information.\n"
-        "• Do not reorder the sentences themselves or change paragraph structure.\n"
-        "• Keep overall length similar to the original.\n\n"
-        "RESPONSE FORMAT — strictly enforced:\n"
-        "Output exactly one JSON object. No text before it, no text after it, "
-        "no markdown fences, no extra keys.\n"
-        "The first character of your response MUST be '{{'. "
-        "The last character MUST be '}}'.\n"
-        "Required schema: {{\"rewrite\": \"<your rewritten text>\"}}\n"
-        "If your rewritten text contains double-quote characters, escape each one "
-        "with a backslash inside the JSON value (write \\\" for each \").\n\n"
-        "Text:\n{text}\n"
-    ),
-    # ── Aggressive ────────────────────────────────────────────────────────────
-    # Scope: deep restructuring — conversational persona, full colloquial register,
-    # free sentence reordering, burstiness, anti-AI blacklist.
-    "aggressive": (
-        "You are writing this as if dashing off a well-informed message to a friend "
-        "— conversational, direct, and confident. Not polished prose. Not an AI draft.\n\n"
-        "TASK: Substantially restructure and rephrase so every stylistic choice feels "
-        "like a real person's instinct, not a formula.\n\n"
-        "WHAT TO DO:\n"
-        "• Use contractions freely (it's, don't, can't, we're, that's, you'd).\n"
-        "• Start sentences with \"And\", \"But\", \"So\", or \"Look\" when it sounds natural.\n"
-        "• Mix very short sentences (5–8 words) with longer flowing ones — vary the rhythm.\n"
-        "• Add an offhand parenthetical aside or em-dash remark where it fits naturally "
-        "(e.g. \"— which is a bit ironic\", \"not that it matters much\").\n"
-        "• One rhetorical question is fine if it fits.\n"
-        "• Light hedging is welcome: \"to be fair\", \"honestly\", \"sort of\", \"I'd say\" "
-        "— used as natural voice, not to hedge every claim.\n"
-        "• Freely reorder clauses and sentences within the passage for stronger flow.\n"
-        "• Replace formulaic transitions with organic connectives, or drop them entirely "
-        "when the flow is clear without them.\n"
-        "• Replace or drop any of these on sight — they immediately signal AI text:\n"
-        "  \"moreover\", \"furthermore\", \"it is worth noting\", \"it is important to\",\n"
-        "  \"delve into\", \"nuanced\", \"multifaceted\", \"pivotal\", \"in today's world\",\n"
-        "  \"navigate\", \"comprehensive\", \"notably\", \"in conclusion\", \"it's crucial\".\n\n"
-        "HARD LIMITS — never violate these:\n"
-        "• Every fact, number, named entity, and core claim stays exactly as-is.\n"
-        "• Do not invent or omit content. Keep the rewrite within ±30 % of the "
-        "original length.\n\n"
-        "RESPONSE FORMAT — strictly enforced:\n"
-        "Output exactly one JSON object. No text before it, no text after it, "
-        "no markdown fences, no extra keys.\n"
-        "The first character of your response MUST be '{{'. "
-        "The last character MUST be '}}'.\n"
-        "Required schema: {{\"rewrite\": \"<your rewritten text>\"}}\n"
-        "If your rewritten text contains double-quote characters, escape each one "
-        "with a backslash inside the JSON value (write \\\" for each \").\n\n"
-        "Text:\n{text}\n"
-    ),
-}
-
-
-def run_rewrite_candidate(text: str, style: str = "balanced") -> str:
+def run_rewrite_with_prompt(text: str, prompt: str, temperature: float = 0.7) -> str:
     """
-    Generate a single rewrite candidate with the specified aggressiveness style.
+    Generate a rewrite using a caller-supplied prompt.
 
-    style options:
-      "conservative" → word/phrase substitutions only; sentence structure frozen
-      "balanced"     → moderate structural changes; varied rhythm and openings
-      "aggressive"   → deep restructuring; contractions, reordering, voice mixing
+    The prompt should already contain the source text (or a {text} placeholder).
+    Returns the extracted rewrite text.
 
-    Raises RewriteResponseError if the model produces no output or returns text
-    identical to the source (silent fallback detection).
+    Raises RewriteResponseError if the model produces no usable output.
     """
-    template    = _REWRITE_PROMPTS.get(style, _REWRITE_PROMPTS["balanced"])
-    temperature = _STYLE_TEMPERATURES.get(style, REWRITE_TEMPERATURE)
-    # Escape any bare { or } in the user text so Python's .format() doesn't
-    # misinterpret them as placeholder syntax (e.g. "Single '}' encountered").
-    safe_text   = text.strip().replace("{", "{{").replace("}", "}}")
-    generated   = _rewrite_generate(template.format(text=safe_text), temperature=temperature)
-    _last_raw_output[style] = generated  # expose for UI diagnostics
+    # If prompt contains {text} placeholder, substitute it
+    if "{text}" in prompt:
+        safe_text = text.strip().replace("{", "{{").replace("}", "}}")
+        # Temporarily un-escape our placeholder
+        final_prompt = prompt.replace("{text}", safe_text)
+    else:
+        final_prompt = prompt
+
+    generated = _rewrite_generate(final_prompt, temperature=temperature)
+    _last_raw_output["prompt"] = generated
 
     if not generated.strip():
         raise RewriteResponseError(
-            f"[{style}] Model returned empty output. "
+            "Model returned empty output. "
             "Check REWRITE_BASE_URL, REWRITE_MODEL, and REWRITE_API_KEY."
         )
 
     result = _extract_rewrite_output(generated, text)
 
-    if REWRITE_DEBUG:
-        _log.debug(
-            "[rewrite-debug] [%s] extracted result (first 300): %r",
-            style, result[:300],
-        )
-
-    # Detect silent fallback: compare after collapsing all whitespace so that
-    # _clean_generated_rewrite's newline→space normalization doesn't mask identity.
+    # Detect silent fallback
     def _ws_norm(s: str) -> str:
         return " ".join(s.split())
 
     if _ws_norm(result) == _ws_norm(text):
         raise RewriteResponseError(
-            f"[{style}] Extraction returned original text unchanged (whitespace-normalized match). "
-            f"Raw model output (first 300 chars): {generated[:300]!r}"
+            "Extraction returned original text unchanged. "
+            f"Raw output (first 300 chars): {generated[:300]!r}"
         )
 
     return result
-
-
-def run_rewrite_ensemble(text: str) -> List[Dict[str, Any]]:
-    """
-    Generate all 3 rewrite candidates (conservative / balanced / aggressive).
-
-    Returns:
-        [{"style": str, "text": str}, ...]  in REWRITE_STYLES order
-    """
-    candidates: List[Dict[str, Any]] = []
-    for style in REWRITE_STYLES:
-        try:
-            candidates.append({"style": style, "text": run_rewrite_candidate(text, style)})
-        except Exception as exc:  # noqa: BLE001
-            # Any failure (format error, model error, network error, …) falls back
-            # to the original text for this candidate.  The error is preserved so
-            # the orchestrator can log it and the UI can surface it.
-            candidates.append(
-                {
-                    "style": style,
-                    "text": text,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "reverted_to_original": True,
-                }
-            )
-    return candidates
 
 
 def _normalize_api_kind(raw: str) -> str:

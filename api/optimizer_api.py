@@ -32,7 +32,7 @@ from pydantic import BaseModel, field_validator
 
 _log = logging.getLogger(__name__)
 
-from scripts.orchestrator import PipelineResult, run_pipeline
+from scripts.orchestrator_v2 import PipelineV2Result, run_pipeline_v2
 
 
 # Set to True only after models_runtime has been fully imported (all module-level
@@ -106,10 +106,10 @@ class OptimizeRequest(BaseModel):
 
 @dataclass
 class SessionState:
-    run_id:  str                      = ""
-    status:  str                      = "idle"   # idle | running | done | error
-    result:  Optional[PipelineResult] = None
-    error:   Optional[str]            = None
+    run_id:  str                          = ""
+    status:  str                          = "idle"   # idle | running | done | error
+    result:  Optional[PipelineV2Result]   = None
+    error:   Optional[str]               = None
 
 
 _session = SessionState()
@@ -332,21 +332,16 @@ async def api_optimize(req: OptimizeRequest):
     run_id  = str(uuid.uuid4())
     _session = SessionState(run_id=run_id, status="running")
 
-    async def _broadcast(payload: Dict[str, Any]) -> None:
-        await _manager.broadcast(payload)
+    async def _broadcast(event_type: str, data: dict) -> None:
+        await _manager.broadcast({"type": event_type, "data": data})
 
     async def _run() -> None:
         global _session
         try:
-            from scripts.app_config import get_pipeline_config
-            pcfg = get_pipeline_config()
-            result = await run_pipeline(
+            result = await run_pipeline_v2(
                 text=req.text,
                 broadcast=_broadcast,
                 run_id=run_id,
-                w_ai=pcfg["w_ai"],
-                w_sem=pcfg["w_sem"],
-                w_risk=pcfg["w_risk"],
                 chunk_mode=req.chunk_mode,
             )
             _session.status = "done"
@@ -374,12 +369,18 @@ async def api_session():
     if s.result is not None:
         r = s.result
         out["summary"] = {
-            "total_chunks":      len(r.chunks),
             "original_ai_score": round(r.original_ai_score, 4),
             "final_ai_score":    round(r.final_ai_score,    4),
             "final_sem_score":   round(r.final_sem_score,   4),
             "output_length":     len(r.output_text),
-            "reverted_chunks":   sum(1 for c in r.chunks if c.reverted_to_original),
+            "total_sentences":   len(r.sentences),
+            "unfixed_count":     len(r.unfixed_sentences),
+            "stage_metrics": {
+                k: {"ai_score": round(m.ai_score, 4),
+                    "violation_count": m.violation_count,
+                    "sem_score": round(m.sem_score, 4)}
+                for k, m in r.stage_metrics.items()
+            },
         }
     return out
 

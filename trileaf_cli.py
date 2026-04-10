@@ -597,48 +597,39 @@ def _should_remove_unix_link(link: Path, config_dir: Path, project_root: Path) -
 
 
 def _cmd_weight(args: argparse.Namespace) -> None:
-    """Show or update Pareto utility weights."""
+    """Show or update pipeline stage thresholds."""
     from scripts import app_config
 
     config = app_config.load_config()
-    pipeline = config.setdefault("pipeline", {})
+    pipeline = config.get("pipeline", {})
+    detector = config.get("detector", {})
+    defaults_p = app_config._DEFAULTS["pipeline"]
+    defaults_d = app_config._DEFAULTS["detector"]
 
-    # Fill defaults for any missing weight keys
-    defaults = app_config._DEFAULTS["pipeline"]
-    for key in ("w_ai", "w_sem", "w_risk"):
-        pipeline.setdefault(key, defaults[key])
-
-    # No args → print current weights
-    if args.ai is None and args.sem is None and args.risk is None:
-        print(f"Current Pareto weights:")
-        print(f"  --ai   (AI reduction)  {pipeline['w_ai']:.2f}")
-        print(f"  --sem  (Semantic)      {pipeline['w_sem']:.2f}")
-        print(f"  --risk (Risk penalty)  {pipeline['w_risk']:.2f}")
-        print(f"  Sum: {pipeline['w_ai'] + pipeline['w_sem'] + pipeline['w_risk']:.2f}")
-        print(f"\nTo update: trileaf weight --ai 0.60 --sem 0.35 --risk 0.05")
+    # No update args → display current config
+    if args.stage4_sem is None and args.stage4_del is None and args.stage5_max is None:
+        print("Pipeline stage thresholds:")
+        print(f"  Stage 3  short max words     : {pipeline.get('stage3_short_max_words', defaults_p['stage3_short_max_words'])}")
+        print(f"  Stage 3  long segment words  : {pipeline.get('stage3_long_segment_words', defaults_p['stage3_long_segment_words'])}")
+        print(f"  Stage 4  rewrite sem gate    : {pipeline.get('stage4_rewrite_sem_gate', defaults_p['stage4_rewrite_sem_gate'])}")
+        print(f"  Stage 4  delete para sem gate: {pipeline.get('stage4_delete_para_sem_gate', defaults_p['stage4_delete_para_sem_gate'])}")
+        print(f"  Stage 5  max per technique   : {pipeline.get('stage5_max_per_technique', defaults_p['stage5_max_per_technique'])}")
+        print(f"\nDetector thresholds:")
+        print(f"  Model useful min std         : {detector.get('model_useful_min_std', defaults_d['model_useful_min_std'])}")
+        print(f"\nTo update: trileaf weight --stage4-sem 0.70 --stage4-del 0.90")
         raise SystemExit(0)
 
-    # Apply any provided values, keep existing for omitted ones
-    new_ai   = args.ai   if args.ai   is not None else pipeline["w_ai"]
-    new_sem  = args.sem  if args.sem  is not None else pipeline["w_sem"]
-    new_risk = args.risk if args.risk is not None else pipeline["w_risk"]
+    # Apply updates
+    if args.stage4_sem is not None:
+        pipeline["stage4_rewrite_sem_gate"] = args.stage4_sem
+    if args.stage4_del is not None:
+        pipeline["stage4_delete_para_sem_gate"] = args.stage4_del
+    if args.stage5_max is not None:
+        pipeline["stage5_max_per_technique"] = args.stage5_max
 
-    total = round(new_ai + new_sem + new_risk, 6)
-    if abs(total - 1.0) > 0.001:
-        print(f"Error: weights must sum to 1.0 (got {total:.4f}).")
-        print(f"  --ai {new_ai:.2f}  --sem {new_sem:.2f}  --risk {new_risk:.2f}")
-        raise SystemExit(1)
-
-    pipeline["w_ai"]   = new_ai
-    pipeline["w_sem"]  = new_sem
-    pipeline["w_risk"] = new_risk
     config["pipeline"] = pipeline
     app_config.save_config(config)
-
-    print(f"Weights updated:")
-    print(f"  AI reduction : {new_ai:.2f}")
-    print(f"  Semantic     : {new_sem:.2f}")
-    print(f"  Risk penalty : {new_risk:.2f}")
+    print("Pipeline thresholds updated.")
 
 
 def _find_venv_python(project_root: Path) -> str:
@@ -944,8 +935,8 @@ def main(argv: list[str] | None = None) -> None:
             "  trileaf stop               # stop the server and release GPU memory\n"
             "  trileaf config             # configure rewrite provider (.env)\n"
             "  trileaf config show        # show current .env config\n"
-            "  trileaf weight             # show current Pareto weights\n"
-            "  trileaf weight --ai 0.5 --sem 0.45 --risk 0.05  # update weights\n"
+            "  trileaf weight             # show current pipeline thresholds\n"
+            "  trileaf weight --stage4-sem 0.70  # update Stage 4 semantic gate\n"
             "  trileaf update             # pull latest version and refresh packages\n"
             "  trileaf doctor             # environment health check\n"
             "  trileaf remove             # uninstall Trileaf and all derived files\n"
@@ -994,19 +985,19 @@ def main(argv: list[str] | None = None) -> None:
 
     # trileaf weight
     p_weight = sub.add_parser(
-        "weight", help="Show or update Pareto utility weights"
+        "weight", help="Show or update pipeline stage thresholds"
     )
     p_weight.add_argument(
-        "--ai", type=float, default=None, metavar="W",
-        help="Weight for AI-score reduction (e.g. 0.60)",
+        "--stage4-sem", type=float, default=None, metavar="V",
+        help="Stage 4 rewrite semantic gate (e.g. 0.65)",
     )
     p_weight.add_argument(
-        "--sem", type=float, default=None, metavar="W",
-        help="Weight for semantic similarity (e.g. 0.35)",
+        "--stage4-del", type=float, default=None, metavar="V",
+        help="Stage 4 delete paragraph semantic gate (e.g. 0.85)",
     )
     p_weight.add_argument(
-        "--risk", type=float, default=None, metavar="W",
-        help="Weight for risk penalty (e.g. 0.05)",
+        "--stage5-max", type=int, default=None, metavar="N",
+        help="Stage 5 max uses per technique (e.g. 3)",
     )
 
     # trileaf update

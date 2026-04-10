@@ -1,1196 +1,530 @@
 /**
- * Trileaf — Dashboard WebSocket client
+ * Trileaf — Dashboard WebSocket client (V2 pipeline)
  *
- * WebSocket message types received from server
- * --------------------------------------------
- * run_start            { run_id, total_chunks, weights }
- * chunk_start          { chunk_idx, total, text }
- * chunk_baseline       { chunk_idx, ai_score, length }
- * ensemble_candidates  { chunk_idx, orig_ai, candidates:[{style,ai_score,sem_score,...}] }
- * chunk_stage          { chunk_idx, stage, state, message }
- * chunk_log            { chunk_idx, level, message }
- * pareto_selection     { chunk_idx, pareto_front, selected_style, selected_utility }
- * chunk_done           { chunk_idx, final_text, original_ai_score,
- *                        final_ai_score, final_sem_score,
- *                        reverted_to_original, status_label, selected_style, candidates }
- * final_scoring        { message }
- * run_done             { run_id, output, original_ai_score, final_ai_score, final_sem_score,
- *                        chunks:[...] }
- * error                { message }
+ * Message types:
+ *   stage_start        { stage, name }
+ *   stage1_done        { ai_score, violation_count, summary, top_issues, model_useful, doc_mean, doc_std }
+ *   sentence_tagged    { idx, text, severity, rule_severity, ai_score, ai_z_score, flags }
+ *   stage2_done        { total_sentences, severity_distribution, model_useful }
+ *   stage3_progress    { segment_idx, total_segments, status }
+ *   stage3_done        { ai_score, violation_count, violation_delta, sem_score }
+ *   stage4_sentence    { idx, action, sem_score, detail }
+ *   stage4_done        { rewritten, deleted, unfixed, ai_score }
+ *   stage5_done        { ai_score, sem_score, techniques_used }
+ *   run_done_v2        { run_id, output, original_ai_score, final_ai_score, final_sem_score, unfixed_sentences }
+ *   error              { message }
  */
 
 (function () {
   'use strict';
 
-  /* ── DOM refs ──────────────────────────────────────────────────────────── */
   const $ = id => document.getElementById(id);
 
-  const inputText          = $('input-text');
-  const runBtn             = $('run-btn');
-  const modeShortBtn       = $('mode-short-btn');
-  const modeLongBtn        = $('mode-long-btn');
-  const modeHint           = $('mode-hint');
-  const runSingleBtn       = $('run-single-btn');
-  const runDoubleBtn       = $('run-double-btn');
-  const runModeHint        = $('run-mode-hint');
-  const chunkList          = $('chunk-list');
-  const progressPH         = $('progress-placeholder');
-  const runSummary         = $('run-summary');
-  const outputView         = $('output-view');
-  const outputStatus       = $('output-status');
-  const outputStatusLabel  = $('output-status-label');
-  const outputStatusDetail = $('output-status-detail');
-  const viewChunkBtn       = $('view-chunk-btn');
-  const viewPlainBtn       = $('view-plain-btn');
-  const copyBtn            = $('copy-btn');
-  const wsDot              = $('ws-dot');
-  const wsLabel            = $('ws-label');
-  const deviceLabel        = $('device-label');
-  const rewriteLabel       = $('rewrite-label');
+  /* ── DOM refs ──────────────────────────────────────────────────────── */
+  const inputText       = $('input-text');
+  const runBtn          = $('run-btn');
+  const modeShortBtn    = $('mode-short-btn');
+  const modeLongBtn     = $('mode-long-btn');
+  const stagesContainer = $('stages-container');
+  const analysisText    = $('analysis-text');
+  const outputText      = $('output-text');
+  const metricsRow      = $('metrics-row');
+  const metricAi        = $('metric-ai');
+  const metricSem       = $('metric-sem');
+  const metricViol      = $('metric-viol');
+  const metricS4        = $('metric-s4');
+  const copyBtn         = $('copy-btn');
+  const wsDot           = $('ws-dot');
+  const wsLabel         = $('ws-label');
+  const deviceLabel     = $('device-label');
+  const rewriteLabel    = $('rewrite-label');
 
-  /* ── State ─────────────────────────────────────────────────────────────── */
-  let ws          = null;
-  let running     = false;
-  const cards     = {};   // chunk_idx → { el, logCount }
-  const originalTexts = {}; // chunk_idx → original text (from chunk_start)
-  let totalChunks = 0;
-  let doneChunks  = 0;
-  let outputChunks = [];
-  let outputRenderMode = 'chunk';
-  let liveUiTimer = null;
-  let overallVisualPct = 0;
-
-  // Chunk mode: "short" | "long"
+  /* ── State ─────────────────────────────────────────────────────────── */
+  let ws = null;
+  let running = false;
   let chunkMode = 'short';
 
-  // Run mode: "single" | "double"
-  let runMode = 'single';
-
-  // Double-pass state — null when not in a two-pass run.
-  // { pass: 1|2, firstPassOriginalAiScore: number|null, chunkMode: string }
-  let _doublePassState = null;
-
-  const CHUNK_PROGRESS = {
-    boot: 4,
-    rewriteStart: 10,
-    rewriteSpan: 50,
-    batchStart: 66,
-    batchSpan: 20,
-    paretoStart: 90,
-    paretoSpan: 7,
+  const STAGE_NAMES = {
+    1: 'Global Scoring',
+    2: 'Sentence Tagging',
+    3: 'Standardized Rewrite',
+    4: 'Stubborn Sentences',
+    5: 'Human Touch',
+    6: 'Formality Calibration',
   };
 
-  function createOutputChunkEntry(chunkIdx) {
-    return {
-      chunk_idx:            chunkIdx,
-      para_idx:             chunkIdx,  // default: each chunk is its own para; overwritten by server
-      original_text:        '',
-      output_text:          '',
-      reverted_to_original: false,
-      best_gated:           null,
-      status_label:         'Queued',
-      original_ai_score:    0,
-      final_ai_score:       0,
-      final_sem_score:      0,
-      selected_style:       '',
-      mode:                 'output',
-      is_complete:          false,
-    };
-  }
+  let stages = {};        // stage_num → { status, metrics_html, barWidth }
+  let sentences = [];     // [ { idx, text, severity, flags, ai_score, ai_z_score } ]
+  let unfixedSet = new Set();
+  let unfixedTexts = [];   // actual sentence texts for inline highlighting
+  let finalOutput = '';
+  let s4Stats = { rewritten: 0, deleted: 0, unfixed: 0 };
+  let globalAiScore = null;   // Stage 1 overall AI score
+  let globalViolCount = 0;
+  let modelUseful = true;
 
-  function upsertOutputChunk(chunkIdx, patch = {}) {
-    let chunk = outputChunks.find(item => item.chunk_idx === chunkIdx);
-    if (!chunk) {
-      chunk = createOutputChunkEntry(chunkIdx);
-      outputChunks.push(chunk);
-    }
-
-    Object.assign(chunk, patch);
-    outputChunks.sort((a, b) => a.chunk_idx - b.chunk_idx);
-    return chunk;
-  }
-
-  function resolveOutputChunkMode(existingChunk, revertedToOriginal) {
-    if (!revertedToOriginal) return existingChunk?.mode || 'output';
-    if (existingChunk?.is_complete) return existingChunk.mode || 'original';
-    return 'original';
-  }
-
-  /* ── Copy button ───────────────────────────────────────────────────────── */
-  copyBtn.addEventListener('click', () => {
-    const t = assembleOutputText();
-    if (!t) return;
-    navigator.clipboard.writeText(t).catch(() => {
-      const temp = document.createElement('textarea');
-      temp.value = t;
-      document.body.appendChild(temp);
-      temp.select();
-      document.execCommand('copy');
-      temp.remove();
-    });
-    copyBtn.textContent = 'Copied!';
-    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-  });
-
-  viewChunkBtn.addEventListener('click', () => {
-    outputRenderMode = 'chunk';
-    syncOutputViewButtons();
-    renderOutputView();
-  });
-
-  viewPlainBtn.addEventListener('click', () => {
-    outputRenderMode = 'plain';
-    syncOutputViewButtons();
-    renderOutputView();
-  });
-
-  /* ── Mode toggle ───────────────────────────────────────────────────────── */
-  const _modeHints = {
-    short: 'Fine-grained · ~200-char chunks · best for texts up to ~3 000 chars',
-    long:  'Paragraph-aware · ~400-char chunks · recommended for 2 000 – 8 000 chars',
-  };
-
-  function setChunkMode(mode) {
-    chunkMode = mode;
-    modeShortBtn.classList.toggle('active', mode === 'short');
-    modeLongBtn.classList.toggle('active',  mode === 'long');
-    if (modeHint) modeHint.textContent = _modeHints[mode];
-  }
-
-  if (modeShortBtn) modeShortBtn.addEventListener('click', () => setChunkMode('short'));
-  if (modeLongBtn)  modeLongBtn.addEventListener('click',  () => setChunkMode('long'));
-
-  /* ── Run mode toggle ───────────────────────────────────────────────────── */
-  const _runModeHints = {
-    single: 'One standard optimization pass',
-    double: 'Text passes through the pipeline twice · may lower AI score further · doubles processing time · greater risk of semantic drift',
-  };
-
-  function setRunMode(mode) {
-    runMode = mode;
-    if (runSingleBtn) runSingleBtn.classList.toggle('active', mode === 'single');
-    if (runDoubleBtn) runDoubleBtn.classList.toggle('active', mode === 'double');
-    if (runModeHint)  runModeHint.textContent = _runModeHints[mode];
-  }
-
-  if (runSingleBtn) runSingleBtn.addEventListener('click', () => setRunMode('single'));
-  if (runDoubleBtn) runDoubleBtn.addEventListener('click', () => setRunMode('double'));
-
-  /* ── Fetch health info ─────────────────────────────────────────────────── */
-  function fetchHealth() {
-    fetch('/api/health')
-      .then(r => r.json())
-      .then(d => {
-        deviceLabel.textContent = d.device || '?';
-        const backend = d.rewrite_backend || '?';
-        const model   = d.rewrite_model  || '';
-        const profile = d.rewrite_profile || '';
-        let label = model || backend;
-        if (profile) label += ` (${profile})`;
-        rewriteLabel.textContent = label;
-      })
-      .catch(() => {});
-  }
-
-  /* ── WebSocket ─────────────────────────────────────────────────────────── */
-  let _reconnectScheduled = false;
-
-  function _scheduleReconnect() {
-    if (_reconnectScheduled) return;
-    _reconnectScheduled = true;
-    setTimeout(() => { _reconnectScheduled = false; connect(); }, 3000);
-  }
-
-  function connect() {
+  /* ── WebSocket ─────────────────────────────────────────────────────── */
+  function connectWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws/optimizer`);
-
-    ws.onopen = () => {
-      wsDot.className     = 'ws-dot connected';
-      wsLabel.textContent = 'Connected';
-      // If the server restarted while a run was in progress, the run is gone.
-      // Reset running state so the button becomes usable again.
-      if (running) setRunning(false);
-      fetchHealth();
-      // Re-fetch after warm-up is expected to complete (~5 s import + buffer)
-      // so Device / Rewrite labels show the fully-resolved values.
-      setTimeout(fetchHealth, 8000);
-    };
-
-    ws.onclose = () => {
-      wsDot.className     = 'ws-dot';
-      wsLabel.textContent = 'Disconnected';
-      _scheduleReconnect();
-    };
-
-    ws.onerror = () => {
-      wsDot.className     = 'ws-dot';
-      wsLabel.textContent = 'Error';
-      _scheduleReconnect();
-    };
-
-    ws.onmessage = evt => {
-      let msg;
-      try { msg = JSON.parse(evt.data); } catch { return; }
-      dispatch(msg);
+    ws.onopen = () => { wsDot.className = 'ws-dot connected'; wsLabel.textContent = 'Connected'; };
+    ws.onclose = () => { wsDot.className = 'ws-dot'; wsLabel.textContent = 'Disconnected'; setTimeout(connectWS, 2000); };
+    ws.onmessage = (ev) => {
+      try { const msg = JSON.parse(ev.data); dispatch(msg.type, msg.data); }
+      catch (e) { /* ignore */ }
     };
   }
 
-  /* ── Message dispatcher ────────────────────────────────────────────────── */
-  function dispatch({ type, data }) {
+  function dispatch(type, data) {
     switch (type) {
-      case 'run_start':           onRunStart(data);           break;
-      case 'chunk_start':         onChunkStart(data);         break;
-      case 'chunk_baseline':      /* log only — handled via chunk_log */  break;
-      case 'rewrite_candidate':   onRewriteCandidate(data);   break;
-      case 'ensemble_candidates': onEnsembleCandidates(data); break;
-      case 'chunk_stage':         onChunkStage(data);         break;
-      case 'chunk_log':           onChunkLog(data);           break;
-      case 'pareto_selection':    onParetoSelection(data);    break;
-      case 'chunk_done':          onChunkDone(data);          break;
-      case 'final_scoring':       onFinalScoring(data);       break;
-      case 'run_done':            onRunDone(data);            break;
-      case 'error':               onError(data);              break;
+      case 'stage_start':       onStageStart(data); break;
+      case 'stage1_done':       onStage1Done(data); break;
+      case 'sentence_tagged':   onSentenceTagged(data); break;
+      case 'stage2_done':       onStage2Done(data); break;
+      case 'stage3_progress':   onStage3Progress(data); break;
+      case 'stage3_done':       onStage3Done(data); break;
+      case 'stage4_sentence':   onStage4Sentence(data); break;
+      case 'stage4_done':       onStage4Done(data); break;
+      case 'stage5_done':       onStage5Done(data); break;
+      case 'stage6_skipped':    onStage6Skipped(data); break;
+      case 'stage6_done':       onStage6Done(data); break;
+      case 'run_done_v2':       onRunDoneV2(data); break;
+      case 'error':             onError(data); break;
     }
   }
 
-  /* ── Event handlers ────────────────────────────────────────────────────── */
+  /* ── Stage card rendering ──────────────────────────────────────────── */
+  let liveTimer = null;
 
-  /**
-   * Reset the UI and immediately render a chunk-0 placeholder.
-   * Called on button click so feedback appears before any WS event arrives.
-   * totalChunks is set to 0 here; onRunStart updates it to the real value.
-   */
-  function _prepareRunUI() {
-    Object.keys(cards).forEach(k => delete cards[k]);
-    Object.keys(originalTexts).forEach(k => delete originalTexts[k]);
-    chunkList.innerHTML = '';
-    if (progressPH) {
-      chunkList.appendChild(progressPH);
-      progressPH.style.display = 'none';
-    }
-
-    outputRenderMode = 'chunk';
-    outputChunks = [];
-    syncOutputViewButtons();
-    renderOutputView();
-    clearOutputStatus();
-
-    const ob = $('overall-bar');
-    if (ob) ob.style.width = '0%';
-    overallVisualPct = 0;
-    totalChunks = 0;
-    doneChunks  = 0;
-    runSummary.textContent = 'Starting…';
-
-    // Chunk 0 placeholder — title shows "Chunk 1 / ?" until run_start arrives
-    const card = buildCard(0, '?');
-    cards[0] = card;
-    chunkList.appendChild(card.el);
-
-    setRunning(true);
+  function initStages() {
+    stages = {};
+    stagesContainer.innerHTML = '';
+    stopLiveTicker();
   }
 
-  function onRunStart(data) {
-    // UI and chunk-0 placeholder already set up by _prepareRunUI() on click.
-    // Just sync the now-known chunk count and update the placeholder title.
-    totalChunks = data.total_chunks;
-    doneChunks  = 0;
-    runSummary.textContent = `0 / ${totalChunks} chunks done`;
-
-    const card0 = cards[0];
-    if (card0) {
-      const titleEl = card0.el.querySelector('.chunk-title');
-      if (titleEl) titleEl.textContent = `Chunk 1 / ${totalChunks}`;
-    } else {
-      // Defensive: button click didn't run (e.g. direct WS trigger) — create now
-      const card = buildCard(0, totalChunks);
-      cards[0] = card;
-      chunkList.appendChild(card.el);
-    }
-  }
-
-  function onChunkStart(data) {
-    originalTexts[data.chunk_idx] = data.text;
-
-    // Reuse the pre-rendered placeholder if it exists, otherwise create a new card
-    let card = cards[data.chunk_idx];
+  /** Create or update a single stage card DOM node (avoids full innerHTML rebuild). */
+  function ensureStageCard(n) {
+    const s = stages[n];
+    if (!s) return;
+    let card = $(`stage-card-${n}`);
     if (!card) {
-      card = buildCard(data.chunk_idx, data.total);
-      cards[data.chunk_idx] = card;
-      chunkList.appendChild(card.el);
+      // First time: create the card
+      card = document.createElement('div');
+      card.id = `stage-card-${n}`;
+      card.className = 'stage-card';
+      card.innerHTML = `
+        <div class="stage-header">
+          <div class="stage-dot" id="stage-dot-${n}"></div>
+          <div class="stage-name" id="stage-name-${n}">Stage ${n} · ${STAGE_NAMES[n]}</div>
+        </div>
+        <div class="stage-bar"><div class="stage-bar-fill" id="stage-bar-${n}"></div></div>
+        <div class="stage-metrics" id="stage-metrics-${n}"></div>`;
+      stagesContainer.appendChild(card);
     }
-    card.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    updateCardLiveState(data.chunk_idx, {
-      stage: 'boot',
-      detailBase: 'Preparing rewrite stage',
-      statusBase: 'Preparing…',
-      summaryBase: `Chunk ${data.chunk_idx + 1}/${data.total} · preparing rewrite stage`,
-      startedAt: Date.now(),
+    // Update classes and content
+    const st = s.status;
+    const isSkipped = st === 'skipped';
+    card.className = `stage-card${st === 'active' ? ' active' : ''}`;
+    if (isSkipped) card.style.opacity = '0.45';
+    else card.style.opacity = '';
+
+    const dot = $(`stage-dot-${n}`);
+    dot.className = `stage-dot ${st}`;
+    dot.textContent = st === 'done' ? '✓' : isSkipped ? '—' : '';
+
+    const name = $(`stage-name-${n}`);
+    name.className = `stage-name ${isSkipped ? 'waiting' : st}`;
+
+    const bar = $(`stage-bar-${n}`);
+    bar.className = `stage-bar-fill ${isSkipped ? 'waiting' : st}`;
+    if (st === 'done') bar.style.width = '100%';
+    if (isSkipped) bar.style.width = '0%';
+
+    const met = $(`stage-metrics-${n}`);
+    met.className = `stage-metrics`;
+    met.innerHTML = s.metrics_html || '';
+  }
+
+  /** Update all existing stage cards. */
+  function renderStages() {
+    for (let i = 1; i <= 6; i++) {
+      if (stages[i]) ensureStageCard(i);
+    }
+  }
+
+  /* ── Live progress ticker (V1-inspired exponential easing) ─────────── */
+
+  function startLiveTicker() {
+    if (liveTimer) return;
+    liveTimer = setInterval(tickLive, 160);
+  }
+
+  function stopLiveTicker() {
+    if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  }
+
+  function tickLive() {
+    for (let i = 1; i <= 5; i++) {
+      const s = stages[i];
+      if (!s || s.status !== 'active') continue;
+
+      // Exponential ease: progress creeps toward ceiling but never reaches it
+      const elapsed = (Date.now() - (s.startedAt || Date.now())) / 1000;
+      const ease = 1 - Math.exp(-elapsed / 6.0);  // τ=6s, slow creep
+
+      // Floor is set by real events; ceiling depends on stage type
+      const floor = s.progressFloor || 5;
+      const ceiling = s.progressCeiling || 92;
+      const simulated = floor + (ceiling - floor) * ease;
+      const pct = Math.min(ceiling, Math.max(floor, simulated));
+
+      const bar = $(`stage-bar-${i}`);
+      if (bar) bar.style.width = `${pct.toFixed(1)}%`;
+    }
+  }
+
+  /* ── Event handlers ────────────────────────────────────────────────── */
+  function onStageStart(d) {
+    const n = d.stage;
+    // Complete all previous stages
+    for (let i = 1; i < n; i++) {
+      if (stages[i] && stages[i].status !== 'done') {
+        stages[i].status = 'done';
+        stages[i].progressFloor = 100;
+      }
+    }
+    // Create the new active stage
+    stages[n] = stages[n] || {};
+    stages[n].status = 'active';
+    stages[n].startedAt = Date.now();
+    stages[n].progressFloor = 5;
+    stages[n].progressCeiling = 92;
+    stages[n].metrics_html = 'Processing...';
+    renderStages();
+    startLiveTicker();
+  }
+
+  function onStage1Done(d) {
+    globalAiScore = d.ai_score;
+    globalViolCount = d.violation_count;
+    modelUseful = d.model_useful !== false;
+    stages[1].status = 'done';
+    stages[1].progressFloor = 100;
+    const genreTag = d.genre ? `<span style="color:var(--accent)">${d.genre}</span>  ·  ` : '';
+    stages[1].metrics_html = `${genreTag}AI: ${d.ai_score.toFixed(2)}  ·  Violations: ${d.violation_count}`;
+    if (!d.model_useful) {
+      stages[1].metrics_html += '  ·  <span style="color:#fbbf24">Low disc.</span>';
+    }
+    renderStages();
+    renderAnalysisHeader();
+  }
+
+  function onSentenceTagged(d) {
+    sentences.push({
+      idx: d.idx,
+      text: d.text,
+      severity: d.severity,
+      flags: d.flags || [],
+      ai_score: d.ai_score != null ? d.ai_score : null,
+      ai_z_score: d.ai_z_score != null ? d.ai_z_score : null,
     });
-    setCardProgressFloor(data.chunk_idx, CHUNK_PROGRESS.boot);
-    setDraftProgressFloor(data.chunk_idx, 0);
-    setConnProgress(data.chunk_idx, 'rewrite', 0);
-    setStage(data.chunk_idx, 'rewrite', 'active');
-    setPhase(data.chunk_idx, 'Ensemble', 'Preparing drafts…');
-    setStatus(data.chunk_idx, 'Rewriting…');
+    // Render incrementally as each sentence arrives
+    renderAnalysis();
   }
 
-  function onRewriteCandidate(data) {
-    const { chunk_idx, style, style_idx, total_styles, status } = data;
-    const n         = style_idx + 1;
-    const label     = style.charAt(0).toUpperCase() + style.slice(1);
-    const icon      = status === 'done' ? '✓' : status === 'error' ? '✗' : '…';
-    const subText   = `${icon} ${n}/${total_styles} · ${label}`;
-    const chunkLabel = totalChunks ? `Chunk ${chunk_idx + 1}/${totalChunks}` : `Chunk ${chunk_idx + 1}`;
-    const draftBase = `Draft ${n}/${total_styles} · ${label}`;
-    const draftStartPct = CHUNK_PROGRESS.rewriteStart + ((n - 1) * CHUNK_PROGRESS.rewriteSpan / total_styles);
-    const draftDonePct = CHUNK_PROGRESS.rewriteStart + (n * CHUNK_PROGRESS.rewriteSpan / total_styles);
-    const ensembleStartPct = ((n - 1) / total_styles) * 100;
-    const ensembleDonePct = (n / total_styles) * 100;
+  function onStage2Done(d) {
+    stages[2].status = 'done';
+    stages[2].progressFloor = 100;
+    const dist = d.severity_distribution || {};
+    const parts = [];
+    if (dist.critical) parts.push(`C:${dist.critical}`);
+    if (dist.high) parts.push(`H:${dist.high}`);
+    if (dist.medium) parts.push(`M:${dist.medium}`);
+    if (dist.low) parts.push(`L:${dist.low}`);
+    if (dist.clean) parts.push(`Clean:${dist.clean}`);
+    stages[2].metrics_html = parts.join('  ') || 'Done';
+    renderStages();
+    renderAnalysis();
+  }
 
-    if (status === 'generating') {
-      setCardProgressFloor(chunk_idx, draftStartPct);
-      setDraftProgressFloor(chunk_idx, ensembleStartPct);
-      updateCardLiveState(chunk_idx, {
-        stage: 'rewrite',
-        draftIndex: style_idx,
-        totalDrafts: total_styles,
-        label,
-        segmentStart: ensembleStartPct,
-        segmentEnd: ensembleDonePct,
-        detailBase: `Generating ${draftBase}`,
-        statusBase: `Draft ${n}/${total_styles}`,
-        summaryBase: `${chunkLabel} · generating ${draftBase.toLowerCase()}`,
-        startedAt: Date.now(),
-      });
-      setPhase(chunk_idx, 'Ensemble', `Generating ${draftBase}`);
-      setStepSub(chunk_idx, 'rewrite', `${n}/${total_styles} · ${label}`);
-      setStatus(chunk_idx, `Draft ${n}/${total_styles}…`);
-    } else {
-      setCardProgressFloor(chunk_idx, draftDonePct);
-      setDraftProgressFloor(chunk_idx, ensembleDonePct);
-      // done or error — briefly show result then the next "generating" will overwrite
-      setStepSub(chunk_idx, 'rewrite', subText);
-      setStatus(chunk_idx, status === 'error' ? `Draft ${n}/${total_styles} fallback` : `Draft ${n}/${total_styles} ready`);
-      if (n === total_styles) {
-        // last candidate finished — summarise
-        setConnProgress(chunk_idx, 'rewrite', 100);
-        setPhase(chunk_idx, 'Ensemble', `All ${total_styles} drafts generated`);
-        updateCardLiveState(chunk_idx, {
-          stage: 'rewrite-wrap',
-          detailBase: `All ${total_styles} drafts generated`,
-          statusBase: 'Preparing comparison',
-          summaryBase: `${chunkLabel} · drafts ready, preparing comparison`,
-          startedAt: Date.now(),
-        });
-      }
+  function onStage3Progress(d) {
+    // Raise the progress floor based on real segment completion
+    const pct = Math.round(((d.segment_idx + 1) / d.total_segments) * 90);
+    if (stages[3]) {
+      stages[3].progressFloor = Math.max(stages[3].progressFloor || 0, pct);
+      stages[3].startedAt = stages[3].startedAt || Date.now(); // reset ease curve
     }
+    stages[3].metrics_html = `Rewriting segment ${d.segment_idx + 1}/${d.total_segments}...`;
+    renderStages();
   }
 
-  function onEnsembleCandidates(data) {
-    // data.candidates: [{style, ai_score, sem_score, ...}]
-    const scores = (data.candidates || [])
-      .map(c => `${c.style[0].toUpperCase()}: ${fmtPct(c.ai_score)}`)
-      .join(' · ');
-    const best = (data.candidates || []).reduce(
-      (a, b) => (!a || b.ai_score < a.ai_score) ? b : a, null
-    );
-    setCardProgressFloor(data.chunk_idx, CHUNK_PROGRESS.batchStart - 3);
-    if (best) setStepSub(data.chunk_idx, 'rewrite', `${best.style} ${fmtPct(best.ai_score)}`);
-    setPhase(data.chunk_idx, 'Ensemble scored', scores);
-    setStatus(data.chunk_idx, 'Batch scoring candidates…');
+  function onStage3Done(d) {
+    stages[3].status = 'done';
+    stages[3].progressFloor = 100;
+    stages[3].metrics_html = `AI: ${d.ai_score.toFixed(2)}  ·  Δviol: ${d.violation_delta}  ·  Sem: ${d.sem_score.toFixed(2)}`;
+    renderStages();
   }
 
-  function onChunkStage(data) {
-    const labelMap = {
-      rewrite:     'Ensemble',
-      batch_score: 'Batch Score',
-      pareto:      'Pareto',
-    };
-    const tone = data.state === 'warn' ? 'warn' : data.state === 'done' ? 'done' : '';
-    setPhase(data.chunk_idx, labelMap[data.stage] || 'Working', data.message, tone);
-
-    if (data.stage === 'rewrite') {
-      setStage(data.chunk_idx, 'rewrite', data.state);
-      if (data.state === 'done' || data.state === 'warn') {
-        setCardProgressFloor(data.chunk_idx, CHUNK_PROGRESS.rewriteStart + CHUNK_PROGRESS.rewriteSpan);
-        setConnProgress(data.chunk_idx, 'rewrite', 100);
-        const conn = getConn(data.chunk_idx, 'rewrite');
-        if (conn) conn.classList.add('done');
-      }
-    }
-    if (data.stage === 'batch_score') {
-      if (data.state === 'active') {
-        const chunkLabel = totalChunks ? `Chunk ${data.chunk_idx + 1}/${totalChunks}` : `Chunk ${data.chunk_idx + 1}`;
-        setCardProgressFloor(data.chunk_idx, CHUNK_PROGRESS.batchStart);
-        setConnProgress(data.chunk_idx, 'rewrite', 100);
-        updateCardLiveState(data.chunk_idx, {
-          stage: 'batch',
-          detailBase: 'Comparing drafts and scoring candidates',
-          statusBase: 'Scoring drafts',
-          summaryBase: `${chunkLabel} · comparing drafts and scoring`,
-          startedAt: Date.now(),
-        });
-      } else if (data.state === 'done' || data.state === 'warn') {
-        setCardProgressFloor(data.chunk_idx, CHUNK_PROGRESS.batchStart + CHUNK_PROGRESS.batchSpan);
-      }
-      setStage(data.chunk_idx, 'batch_score', data.state);
-      if (data.state === 'done' || data.state === 'warn') {
-        const conn = getConn(data.chunk_idx, 'batch_score');
-        if (conn) conn.classList.add('done');
-      }
-    }
-    if (data.stage === 'pareto') {
-      if (data.state === 'active') {
-        const chunkLabel = totalChunks ? `Chunk ${data.chunk_idx + 1}/${totalChunks}` : `Chunk ${data.chunk_idx + 1}`;
-        setCardProgressFloor(data.chunk_idx, CHUNK_PROGRESS.paretoStart);
-        updateCardLiveState(data.chunk_idx, {
-          stage: 'pareto',
-          detailBase: 'Selecting the strongest rewrite',
-          statusBase: 'Selecting best draft',
-          summaryBase: `${chunkLabel} · selecting the strongest rewrite`,
-          startedAt: Date.now(),
-        });
-      } else if (data.state === 'done' || data.state === 'warn') {
-        setCardProgressFloor(data.chunk_idx, CHUNK_PROGRESS.paretoStart + CHUNK_PROGRESS.paretoSpan);
-      }
-      setStage(data.chunk_idx, 'pareto', data.state);
-    }
+  function onStage4Sentence(d) {
+    if (d.action === 'unfixed_risky') unfixedSet.add(d.idx);
   }
 
-  function onChunkLog(data) {
-    pushLog(data.chunk_idx, data.message, data.level || 'info');
+  function onStage4Done(d) {
+    stages[4].status = 'done';
+    stages[4].progressFloor = 100;
+    s4Stats = { rewritten: d.rewritten || 0, deleted: d.deleted || 0, unfixed: d.unfixed || 0 };
+    const parts = [];
+    if (s4Stats.rewritten) parts.push(`Rewrite ${s4Stats.rewritten}`);
+    if (s4Stats.deleted) parts.push(`Del ${s4Stats.deleted}`);
+    if (s4Stats.unfixed) parts.push(`⚠ ${s4Stats.unfixed}`);
+    stages[4].metrics_html = parts.join(' · ') || 'No stubborn sentences';
+    renderStages();
   }
 
-  function onParetoSelection(data) {
-    setStepSub(
-      data.chunk_idx, 'pareto',
-      data.selected_style
-        ? `${data.selected_style} U=${data.selected_utility?.toFixed(2)}`
-        : 'fallback'
-    );
+  function onStage5Done(d) {
+    stages[5].status = 'done';
+    stages[5].progressFloor = 100;
+    stages[5].metrics_html = `AI: ${d.ai_score.toFixed(2)}  ·  Sem: ${d.sem_score.toFixed(2)}`;
+    renderStages();
   }
 
-  function onChunkDone(data) {
-    setStage(data.chunk_idx, 'pareto', data.reverted_to_original ? 'warn' : 'done');
-    setCardProgressFloor(data.chunk_idx, 100);
-    setDraftProgressFloor(data.chunk_idx, 100);
-    clearCardLiveState(data.chunk_idx);
-    setConnProgress(data.chunk_idx, 'rewrite', 100);
-
-    const card = cards[data.chunk_idx];
-    if (card) {
-      card.completed = true;
-      card.el.classList.remove('active-card');
-      card.el.classList.remove('processing-live', 'inference-live');
-      card.el.classList.add(data.reverted_to_original ? 'warn' : 'done');
-    }
-
-    const gatePassCount = (data.candidates || []).filter(c => c.gate_pass).length;
-    const detailMsg = data.reverted_to_original
-      ? `No candidate passed gate (${gatePassCount}/3 passed)`
-      : `${data.selected_style} · AI ${fmtPct(data.final_ai_score)} · Sem ${fmtPct(data.final_sem_score)}`;
-
-    setPhase(
-      data.chunk_idx,
-      data.status_label || (data.reverted_to_original ? 'Reverted to original' : 'Edited'),
-      detailMsg,
-      data.reverted_to_original ? 'warn' : 'done'
-    );
-    setStatus(data.chunk_idx, data.reverted_to_original ? 'Fallback ⚠' : 'Done ✓');
-
-    doneChunks++;
-    runSummary.textContent = `${doneChunks} / ${totalChunks} chunks done`;
-    overallVisualPct = Math.max(
-      overallVisualPct,
-      (doneChunks / Math.max(totalChunks, 1)) * 100
-    );
-
-    const ob = $('overall-bar');
-    if (ob) ob.style.width = (doneChunks / totalChunks * 100).toFixed(1) + '%';
-
-    const existingOutputChunk = outputChunks.find(chunk => chunk.chunk_idx === data.chunk_idx);
-
-    // In pass 2 of a double run, show the raw-input chunk as "original" so the
-    // per-chunk comparison reflects raw-input → final-output, not pass1-output → pass2-output.
-    const _p1raw = _doublePassState?.pass === 2
-      ? (_doublePassState.pass1RawChunks?.[data.chunk_idx] ?? null)
-      : null;
-
-    upsertOutputChunk(data.chunk_idx, {
-      para_idx:             data.para_idx ?? data.chunk_idx,
-      original_text:        _p1raw ? _p1raw.text : (originalTexts[data.chunk_idx] || existingOutputChunk?.original_text || ''),
-      output_text:          data.final_text || '',
-      reverted_to_original: !!data.reverted_to_original,
-      best_gated:           data.best_candidate || existingOutputChunk?.best_gated || null,
-      status_label:         data.status_label || (data.reverted_to_original ? 'Reverted to original' : 'Edited'),
-      original_ai_score:    _p1raw ? _p1raw.original_ai_score : (data.original_ai_score || 0),
-      final_ai_score:       data.final_ai_score || 0,
-      final_sem_score:      data.final_sem_score || 0,
-      selected_style:       data.selected_style || '',
-      mode:                 resolveOutputChunkMode(existingOutputChunk, !!data.reverted_to_original),
-      is_complete:          true,
-    });
-    renderOutputView();
-  }
-
-  function onFinalScoring() {
-    runSummary.textContent = 'Computing final scores…';
-    overallVisualPct = 100;
-    const ob  = $('overall-bar');
-    const opr = ob && ob.parentElement;
-    if (ob)  { ob.style.width = '100%'; ob.classList.remove('running'); }
-    if (opr) opr.classList.remove('running');
-  }
-
-  function onRunDone(data) {
-    // Patch existing streamed chunks with best_candidate (text only available here)
-    (data.chunks || []).forEach(chunk => {
-      const existing = outputChunks.find(c => c.chunk_idx === chunk.chunk_idx);
-      const _p1raw = _doublePassState?.pass === 2
-        ? (_doublePassState.pass1RawChunks?.[chunk.chunk_idx] ?? null)
-        : null;
-      upsertOutputChunk(chunk.chunk_idx, {
-        para_idx:             chunk.para_idx ?? chunk.chunk_idx,
-        original_text:        _p1raw ? _p1raw.text : (chunk.original_text || existing?.original_text || ''),
-        output_text:          chunk.final_text || existing?.output_text || '',
-        reverted_to_original: !!chunk.reverted_to_original,
-        best_gated:           chunk.best_candidate || null,
-        status_label:         chunk.status_label || (chunk.reverted_to_original ? 'Reverted to original' : 'Edited'),
-        original_ai_score:    _p1raw ? _p1raw.original_ai_score : (chunk.original_ai_score || existing?.original_ai_score || 0),
-        final_ai_score:       chunk.final_ai_score || existing?.final_ai_score || 0,
-        final_sem_score:      chunk.final_sem_score || existing?.final_sem_score || 0,
-        selected_style:       chunk.selected_style || existing?.selected_style || '',
-        mode:                 resolveOutputChunkMode(existing, !!chunk.reverted_to_original),
-        is_complete:          true,
-      });
-    });
-    renderOutputView();
-
-    // ── Two-pass: after pass 1, fire pass 2 automatically ──────────────────
-    if (_doublePassState && _doublePassState.pass === 1) {
-      _doublePassState.firstPassOriginalAiScore = data.original_ai_score || 0;
-      // Snapshot per-chunk raw-input data BEFORE _prepareRunUI() clears outputChunks.
-      // Pass 2 will use these to show raw-input vs final-output in each chunk card.
-      _doublePassState.pass1RawChunks = {};
-      outputChunks.forEach(c => {
-        _doublePassState.pass1RawChunks[c.chunk_idx] = {
-          text:              c.original_text,
-          original_ai_score: c.original_ai_score,
-        };
-      });
-      _doublePassState.pass = 2;
-
-      const secondPassText = data.output;
-      _prepareRunUI();
-      if (runSummary) runSummary.textContent = 'Pass 2 / 2';
-
-      fetch('/api/optimize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: secondPassText, chunk_mode: _doublePassState.chunkMode }),
-      }).then(r => r.json()).then(d => {
-        if (d.error) { alert(d.error); setRunning(false); _doublePassState = null; }
-      }).catch(e => {
-        alert('Pass 2 failed: ' + e.message);
-        setRunning(false);
-        _doublePassState = null;
-      });
-      return; // defer UI finalisation to pass-2 run_done
-    }
-
-    // ── Finalise UI (single pass, or pass 2 of double pass) ────────────────
-    const revertedCount = (data.chunks || []).filter(c => c.reverted_to_original).length;
-
-    // For double-pass, compare against the very first original AI score
-    const origAi  = _doublePassState
-      ? _doublePassState.firstPassOriginalAiScore
-      : (data.original_ai_score || 0);
-    const finalAi = data.final_ai_score || 0;
-
-    const delta    = (origAi - finalAi) * 100;
-    const deltaStr = delta >= 0
-      ? `<span style="color:var(--green)">↓${delta.toFixed(1)}pp</span>`
-      : `<span style="color:var(--red)">↑${Math.abs(delta).toFixed(1)}pp</span>`;
-    const passLabel = _doublePassState
-      ? `<span style="color:var(--muted);font-size:10px"> (2-pass)</span>`
-      : '';
-    const aiCompare = `<span style="color:var(--muted)">AI detection &nbsp;</span>`
-      + `<span style="font-weight:700;color:#ffb0b0">${fmtPct(origAi)}</span>`
-      + `<span style="color:var(--muted)"> before &nbsp;→&nbsp; </span>`
-      + `<span style="font-weight:700;color:var(--green)">${fmtPct(finalAi)}</span>`
-      + `<span style="color:var(--muted)"> after &nbsp;</span>`
-      + deltaStr + passLabel;
-    const semStr = `Semantic similarity: ${fmtPct(data.final_sem_score)}`;
-
-    if (revertedCount > 0) {
-      setOutputStatus(
-        'warn',
-        aiCompare,
-        `${semStr}  ·  ${revertedCount} chunk${revertedCount > 1 ? 's' : ''} reverted to original`
-      );
-      runSummary.textContent = `Done — ${revertedCount} chunk${revertedCount > 1 ? 's' : ''} reverted`;
-    } else {
-      setOutputStatus('done', aiCompare, semStr);
-      runSummary.textContent = `Done — ${totalChunks} chunks`;
-    }
-
-    _doublePassState = null;
-    setRunning(false);
-  }
-
-  function onError(data) {
-    setRunning(false);
-    const err = document.createElement('div');
-    err.className = 'chunk-card error-card';
-    err.innerHTML = `<div style="color:var(--red);font-size:12px;">
-      ⚠ Error: ${escHtml(data.message)}
-    </div>`;
-    chunkList.appendChild(err);
-    err.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
-
-  /* ── Run button ─────────────────────────────────────────────────────────── */
-  runBtn.addEventListener('click', async () => {
-    const text = inputText.value.trim();
-    if (!text) { inputText.focus(); return; }
-
-    if (runMode === 'double') {
-      _doublePassState = { pass: 1, firstPassOriginalAiScore: null, chunkMode };
-      _prepareRunUI();
-      if (runSummary) runSummary.textContent = 'Pass 1 / 2';
-    } else {
-      _doublePassState = null;
-      _prepareRunUI();
-    }
-
-    try {
-      const res = await fetch('/api/optimize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, chunk_mode: chunkMode }),
-      });
-      const data = await res.json();
-      if (data.error) { alert(data.error); setRunning(false); _doublePassState = null; }
-    } catch (e) {
-      alert('Failed to start optimization: ' + e.message);
-      setRunning(false);
-      _doublePassState = null;
-    }
-  });
-
-  /* ── Card helpers ──────────────────────────────────────────────────────── */
-
-  function buildCard(idx, total) {
-    const el = document.createElement('div');
-    el.className = 'chunk-card active-card';
-    el.dataset.idx = idx;
-    el.innerHTML = `
-      <div class="chunk-head">
-        <span class="chunk-title">Chunk ${idx + 1} / ${total}</span>
-        <span class="chunk-status" data-status="${idx}">Queued…</span>
-      </div>
-      <div class="chunk-meta">
-        <div class="phase-badge" data-phase-label="${idx}">Queued</div>
-        <div class="phase-detail" data-phase-detail="${idx}">Waiting to start</div>
-      </div>
-      <div class="pipeline-steps">
-        <div class="step" data-stage="rewrite" data-idx="${idx}">
-          <div class="step-dot-wrap"><div class="step-dot"></div></div>
-          <div class="step-label">Ensemble</div>
-          <div class="step-sub" data-sub="rewrite" data-idx="${idx}"></div>
-        </div>
-        <div class="step-conn" data-conn="rewrite" data-idx="${idx}"></div>
-        <div class="step" data-stage="batch_score" data-idx="${idx}">
-          <div class="step-dot-wrap"><div class="step-dot"></div></div>
-          <div class="step-label">Batch Score</div>
-          <div class="step-sub" data-sub="batch_score" data-idx="${idx}"></div>
-        </div>
-        <div class="step-conn" data-conn="batch_score" data-idx="${idx}"></div>
-        <div class="step" data-stage="pareto" data-idx="${idx}">
-          <div class="step-dot-wrap"><div class="step-dot"></div></div>
-          <div class="step-label">Pareto</div>
-          <div class="step-sub" data-sub="pareto" data-idx="${idx}"></div>
-        </div>
-      </div>
-      <div class="chunk-log">
-        <div class="chunk-log-head">
-          <span>Recent Activity</span>
-          <span data-log-count="${idx}">0</span>
-        </div>
-        <div class="chunk-log-list" data-log-list="${idx}"></div>
-      </div>`;
-    return {
-      el,
-      idx,
-      logCount: 0,
-      completed: false,
+  function onStage6Skipped(d) {
+    // Show a "skipped" card for Stage 6
+    stages[6] = {
+      status: 'skipped',
       progressFloor: 0,
-      draftProgressFloor: 0,
-      live: null,
+      metrics_html: `<span style="color:var(--muted)">Skipped (${d.genre} genre)</span>`,
     };
+    ensureStageCard(6);
   }
 
-  function setStage(idx, stage, state) {
-    const card = cards[idx];
-    if (!card) return;
-    const step = card.el.querySelector(`.step[data-stage="${stage}"][data-idx="${idx}"]`);
-    if (step) step.className = `step ${state}`;
+  function onStage6Done(d) {
+    stages[6].status = 'done';
+    stages[6].progressFloor = 100;
+    const accepted = d.accepted ? '<span style="color:var(--green)">✓ accepted</span>' : '<span style="color:var(--yellow)">✗ reverted</span>';
+    stages[6].metrics_html = `AI: ${d.ai_score.toFixed(2)}  ·  Sem: ${d.sem_score.toFixed(2)}  ·  ${accepted}`;
+    renderStages();
   }
 
-  function getConn(idx, stage) {
-    const card = cards[idx];
-    if (!card) return null;
-    return card.el.querySelector(`.step-conn[data-conn="${stage}"][data-idx="${idx}"]`);
+  function onRunDoneV2(d) {
+    running = false;
+    runBtn.disabled = false;
+    runBtn.textContent = 'Optimize';
+    stopLiveTicker();
+    finalOutput = d.output || '';
+
+    if (d.unfixed_sentences) d.unfixed_sentences.forEach(i => unfixedSet.add(i));
+    unfixedTexts = d.unfixed_texts || [];
+
+    // Metrics cards
+    metricsRow.style.display = 'flex';
+    const origAi = d.original_ai_score;
+    const finalAi = d.final_ai_score;
+    const pct = origAi > 0 ? Math.round((1 - finalAi / origAi) * 100) : 0;
+    metricAi.innerHTML = `<span class="from">${origAi.toFixed(2)}</span><span class="arrow">→</span><span class="to">${finalAi.toFixed(2)}</span><span class="pct">↓${pct}%</span>`;
+    metricSem.innerHTML = `<span class="single">${d.final_sem_score.toFixed(2)}</span>`;
+    metricViol.innerHTML = `<span class="from">${globalViolCount}</span><span class="arrow">→</span><span class="to">0</span>`;
+
+    const s4p = [];
+    if (s4Stats.rewritten) s4p.push(`Rewrite ${s4Stats.rewritten}`);
+    if (s4Stats.deleted) s4p.push(`Del ${s4Stats.deleted}`);
+    if (s4Stats.unfixed) s4p.push(`⚠ ${s4Stats.unfixed}`);
+    metricS4.innerHTML = `<span class="s4-detail">${s4p.join(' · ') || '—'}</span>`;
+
+    renderOutput();
   }
 
-  function setPhase(idx, label, detail, tone = '') {
-    const card = cards[idx];
-    if (!card) return;
-    const labelEl  = card.el.querySelector(`[data-phase-label="${idx}"]`);
-    const detailEl = card.el.querySelector(`[data-phase-detail="${idx}"]`);
-    if (labelEl) {
-      labelEl.textContent = label;
-      labelEl.className = `phase-badge${tone ? ' ' + tone : ''}${card.live ? ' live' : ''}`;
-    }
-    if (detailEl) detailEl.textContent = detail;
-    if (card.el && tone !== 'done') card.el.classList.add('active-card');
+  function onError(d) {
+    running = false;
+    runBtn.disabled = false;
+    runBtn.textContent = 'Optimize';
+    stopLiveTicker();
+    outputText.innerHTML = `<span style="color:var(--red)">Error: ${d.message || 'Unknown error'}</span>`;
   }
 
-  function setStepSub(idx, stage, text) {
-    const card = cards[idx];
-    if (!card) return;
-    const sub = card.el.querySelector(`[data-sub="${stage}"][data-idx="${idx}"]`);
-    if (sub) sub.textContent = text;
+  /* ── Rendering ─────────────────────────────────────────────────────── */
+
+  function renderAnalysisHeader() {
+    // Prepend overall score badge if we have it
+    if (globalAiScore == null) return;
+    const badge = document.querySelector('.analysis-score-badge');
+    if (badge) badge.remove();
+
+    const header = document.querySelector('.analysis-pane .pane-header .section-label');
+    if (!header) return;
+    const span = document.createElement('span');
+    span.className = 'analysis-score-badge';
+    const color = globalAiScore > 0.6 ? 'var(--red)' : globalAiScore > 0.4 ? 'var(--yellow)' : 'var(--green)';
+    span.innerHTML = ` <span style="font-family:'Geist Mono',monospace;font-weight:600;color:${color};margin-left:8px">Overall AI: ${globalAiScore.toFixed(2)}</span>`;
+    header.appendChild(span);
   }
 
-  function setStatus(idx, text) {
-    const card = cards[idx];
-    if (!card) return;
-    const el = card.el.querySelector(`[data-status="${idx}"]`);
-    if (el) el.textContent = text;
-  }
+  function renderAnalysis() {
+    if (!sentences.length) return;
 
-  function updateCardLiveState(idx, live) {
-    const card = cards[idx];
-    if (!card) return;
-    card.live = live;
-    card.el.classList.toggle('processing-live', !!live);
-    card.el.classList.toggle('inference-live', !!live && live.stage === 'rewrite');
-    const labelEl = card.el.querySelector(`[data-phase-label="${idx}"]`);
-    const detailEl = card.el.querySelector(`[data-phase-detail="${idx}"]`);
-    const statusEl = card.el.querySelector(`[data-status="${idx}"]`);
-    if (labelEl) labelEl.classList.toggle('live', !!live);
-    if (detailEl) detailEl.classList.toggle('live', !!live);
-    if (statusEl) statusEl.classList.toggle('live', !!live);
-  }
+    let html = '';
+    for (let i = 0; i < sentences.length; i++) {
+      const s = sentences[i];
+      if (i > 0) html += ' ';
 
-  function clearCardLiveState(idx) {
-    updateCardLiveState(idx, null);
-  }
+      const hlClass = getHighlightClass(s.severity);
 
-  function setCardProgressFloor(idx, pct) {
-    const card = cards[idx];
-    if (!card) return;
-    card.progressFloor = Math.max(card.progressFloor || 0, Math.min(100, pct));
-  }
-
-  function setDraftProgressFloor(idx, pct) {
-    const card = cards[idx];
-    if (!card) return;
-    card.draftProgressFloor = Math.max(card.draftProgressFloor || 0, Math.min(100, pct));
-  }
-
-  function setConnProgress(idx, stage, pct) {
-    const conn = getConn(idx, stage);
-    if (!conn) return;
-    const clamped = Math.max(0, Math.min(100, pct));
-    conn.style.setProperty('--progress', `${clamped.toFixed(1)}%`);
-  }
-
-  function getActiveCard() {
-    return Object.values(cards)
-      .filter(card => card && !card.completed)
-      .sort((a, b) => a.idx - b.idx)[0] || null;
-  }
-
-  function estimateChunkProgress(card) {
-    const live = card && card.live;
-    const floor = Math.max(0, Math.min(100, card?.progressFloor || 0));
-    if (!live) return floor;
-    const elapsed = Math.max(0, (Date.now() - (live.startedAt || Date.now())) / 1000);
-    const ease = 1 - Math.exp(-elapsed / 4.2);
-
-    if (live.stage === 'rewrite') {
-      const totalDrafts = Math.max(1, live.totalDrafts || 3);
-      const draftIndex = Math.max(0, live.draftIndex || 0);
-      const segStart = CHUNK_PROGRESS.rewriteStart + (draftIndex * CHUNK_PROGRESS.rewriteSpan / totalDrafts);
-      const segSpan = CHUNK_PROGRESS.rewriteSpan / totalDrafts;
-      const simulated = segStart + segSpan * Math.min(0.86, ease);
-      return Math.max(floor, simulated);
-    }
-    if (live.stage === 'rewrite-wrap') {
-      return Math.max(floor, CHUNK_PROGRESS.batchStart - 2);
-    }
-    if (live.stage === 'batch') {
-      const simulated = CHUNK_PROGRESS.batchStart + CHUNK_PROGRESS.batchSpan * Math.min(0.92, ease);
-      return Math.max(floor, simulated);
-    }
-    if (live.stage === 'pareto') {
-      const simulated = CHUNK_PROGRESS.paretoStart + CHUNK_PROGRESS.paretoSpan * Math.min(0.92, ease);
-      return Math.max(floor, simulated);
-    }
-    if (live.stage === 'boot') {
-      return Math.max(floor, CHUNK_PROGRESS.boot + 2 * Math.min(1, ease));
-    }
-    return floor;
-  }
-
-  function estimateDraftProgress(card) {
-    const live = card && card.live;
-    const floor = Math.max(0, Math.min(100, card?.draftProgressFloor || 0));
-    if (!live || live.stage !== 'rewrite') return floor;
-
-    const elapsed = Math.max(0, (Date.now() - (live.startedAt || Date.now())) / 1000);
-    const ease = 1 - Math.exp(-elapsed / 5.4);
-    const segStart = Math.max(0, Math.min(100, live.segmentStart || 0));
-    const segEnd = Math.max(segStart, Math.min(100, live.segmentEnd || 100));
-    const segSpan = segEnd - segStart;
-    const simulated = segStart + segSpan * Math.min(0.82, ease);
-    return Math.max(floor, simulated);
-  }
-
-  function updateLiveCardText(card) {
-    if (!card || !card.live) return;
-    const idx = card.idx;
-    const live = card.live;
-    const detailEl = card.el.querySelector(`[data-phase-detail="${idx}"]`);
-    const statusEl = card.el.querySelector(`[data-status="${idx}"]`);
-    const summaryBase = live.summaryBase || '';
-
-    if (detailEl && live.detailBase) detailEl.textContent = live.detailBase;
-    if (statusEl && live.statusBase) statusEl.textContent = live.statusBase;
-    if (summaryBase && runSummary) runSummary.textContent = summaryBase;
-  }
-
-  function updateOverallProgressFrame() {
-    const ob = $('overall-bar');
-    if (!ob || !totalChunks) return;
-    const activeCard = getActiveCard();
-    const activeChunkPct = activeCard ? (estimateChunkProgress(activeCard) / 100) : 0;
-    const target = Math.max(
-      overallVisualPct,
-      ((doneChunks + activeChunkPct) / Math.max(totalChunks, 1)) * 100
-    );
-    overallVisualPct += (target - overallVisualPct) * 0.18;
-    if (target - overallVisualPct < 0.2) overallVisualPct = target;
-    const renderPct = activeCard ? Math.min(99.4, overallVisualPct) : overallVisualPct;
-    ob.style.width = `${renderPct.toFixed(2)}%`;
-
-    if (activeCard) {
-      const draftPct = estimateDraftProgress(activeCard);
-      setConnProgress(activeCard.idx, 'rewrite', draftPct);
-    }
-  }
-
-  function tickLiveUi() {
-    if (!running) return;
-    const activeCard = getActiveCard();
-    if (activeCard) updateLiveCardText(activeCard);
-    updateOverallProgressFrame();
-  }
-
-  function startLiveUiLoop() {
-    if (liveUiTimer) return;
-    liveUiTimer = setInterval(tickLiveUi, 180);
-    tickLiveUi();
-  }
-
-  function stopLiveUiLoop() {
-    if (!liveUiTimer) return;
-    clearInterval(liveUiTimer);
-    liveUiTimer = null;
-  }
-
-  function pushLog(idx, message, level) {
-    const card = cards[idx];
-    if (!card) return;
-    const list    = card.el.querySelector(`[data-log-list="${idx}"]`);
-    const counter = card.el.querySelector(`[data-log-count="${idx}"]`);
-    if (!list) return;
-
-    const line = document.createElement('div');
-    line.className = `log-line ${level || 'info'}`.trim();
-    line.innerHTML = `
-      <span class="log-time">${timeStamp()}</span>
-      <span class="log-msg">${escHtml(message)}</span>
-    `;
-    list.prepend(line);
-
-    while (list.children.length > 40) list.removeChild(list.lastChild);
-
-    card.logCount = (card.logCount || 0) + 1;
-    if (counter) counter.textContent = `${Math.min(card.logCount, 40)} shown`;
-  }
-
-  // label accepts raw HTML; detail is plain text
-  function setOutputStatus(tone, labelHtml, detail) {
-    if (!outputStatus) return;
-    outputStatus.className = `output-status visible${tone ? ' ' + tone : ''}`;
-    if (outputStatusLabel)  outputStatusLabel.innerHTML = labelHtml || '';
-    if (outputStatusDetail) outputStatusDetail.textContent = detail || '';
-  }
-
-  function clearOutputStatus() {
-    if (!outputStatus) return;
-    outputStatus.className = 'output-status';
-    if (outputStatusLabel)  outputStatusLabel.textContent  = '';
-    if (outputStatusDetail) outputStatusDetail.textContent = '';
-  }
-
-  /* ── Output rendering ──────────────────────────────────────────────────── */
-
-  /** Build a single output-chunk <div> element with toggle listeners attached. */
-  function _buildChunkEl(chunk) {
-    const el = document.createElement('div');
-    const isComplete     = !!chunk.is_complete;
-    const shownOriginal  = chunk.mode === 'original';
-    const shownBestGated = isComplete && !shownOriginal && chunk.reverted_to_original && chunk.best_gated;
-    const statusTone     = !isComplete ? 'pending' : (chunk.reverted_to_original ? 'warn' : 'done');
-
-    let displayLabel, bodyText, metricsHtml, tagClass;
-    if (!isComplete && shownOriginal) {
-      displayLabel = 'Original';
-      tagClass     = 'original';
-      bodyText     = chunk.original_text || 'Waiting for original chunk text…';
-      metricsHtml  = `
-        <div class="metric-row"><span>AI Score</span><strong>—</strong></div>
-        <div class="metric-row"><span>Semantic</span><strong>—</strong></div>
-      `;
-    } else if (!isComplete) {
-      displayLabel = 'Processing';
-      tagClass     = 'processing';
-      bodyText     = 'This chunk will render here as soon as processing completes.';
-      metricsHtml  = `
-        <div class="metric-row"><span>Status</span><strong>Running</strong></div>
-        <div class="metric-row"><span>AI Score</span><strong>—</strong></div>
-        <div class="metric-row"><span>Semantic</span><strong>—</strong></div>
-      `;
-    } else if (shownOriginal) {
-      displayLabel = 'Original';
-      tagClass     = 'original';
-      bodyText     = chunk.original_text;
-      metricsHtml  = `
-        <div class="metric-row">
-          <span>AI Score</span>
-          <strong class="metric-ai">${fmtPct(chunk.original_ai_score)}</strong>
-        </div>
-        <div class="metric-row"><span>Semantic</span><strong>—</strong></div>
-      `;
-    } else if (shownBestGated) {
-      const bg = chunk.best_gated;
-      displayLabel = 'Best candidate';
-      tagClass     = 'optimized';
-      bodyText     = bg.text;
-      metricsHtml  = `
-        <div class="metric-row">
-          <span>AI Score</span>
-          <strong class="metric-ai">${fmtPct(bg.ai_score)}</strong>
-        </div>
-        <div class="metric-row">
-          <span>Semantic</span>
-          <strong class="metric-sem">${fmtPct(bg.sem_score)}</strong>
-        </div>
-        <div class="metric-row"><span>Style</span><strong>${escHtml(bg.style)}</strong></div>
-        <div class="metric-row" style="font-size:10px;color:var(--yellow)">
-          <span>Gate failed</span><strong style="color:var(--yellow)">not used</strong>
-        </div>
-      `;
-    } else {
-      displayLabel = 'Model output';
-      tagClass     = 'optimized';
-      bodyText     = chunk.output_text;
-      metricsHtml  = `
-        <div class="metric-row">
-          <span>AI Score</span>
-          <strong class="metric-ai">${fmtPct(chunk.final_ai_score)}</strong>
-        </div>
-        <div class="metric-row">
-          <span>Semantic</span>
-          <strong class="metric-sem">${fmtPct(chunk.final_sem_score)}</strong>
-        </div>
-        ${chunk.selected_style ? `<div class="metric-row"><span>Style</span><strong>${escHtml(chunk.selected_style)}</strong></div>` : ''}
-      `;
-    }
-
-    const outputBtnLabel = !isComplete
-      ? 'Processing'
-      : (chunk.reverted_to_original && chunk.best_gated ? 'Best candidate' : 'Output');
-
-    el.className = `output-chunk${chunk.reverted_to_original ? ' reverted' : ''}${!isComplete ? ' pending' : ''}`;
-    el.dataset.chunkIdx = chunk.chunk_idx;
-    el.innerHTML = `
-      <div class="output-chunk-head">
-        <div class="output-chunk-title">
-          <span>Chunk ${chunk.chunk_idx + 1}</span>
-          <span class="output-chunk-tag ${tagClass}">${displayLabel}</span>
-          <span class="output-chunk-status ${statusTone}">
-            ${escHtml(chunk.status_label || 'Edited')}
-          </span>
-        </div>
-        <div class="output-toggle">
-          <button data-mode="original" data-idx="${chunk.chunk_idx}" class="${shownOriginal ? 'active' : ''}">Original</button>
-          <button data-mode="output" data-idx="${chunk.chunk_idx}" class="${shownOriginal ? '' : 'active'}" ${!isComplete ? 'disabled' : ''}>${outputBtnLabel}</button>
-        </div>
-      </div>
-      <div class="output-chunk-main">
-        <div class="output-chunk-body">${escHtml(bodyText)}</div>
-        <div class="output-chunk-metrics">${metricsHtml}</div>
-      </div>
-    `;
-    el.querySelectorAll('.output-toggle button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        toggleOutputChunk(Number(btn.dataset.idx), btn.dataset.mode);
-      });
-    });
-    return el;
-  }
-
-  /**
-   * Full re-render of the output view from outputChunks.
-   * Used for: initial empty state, plain/chunk mode switch, run_done.
-   */
-  function renderOutputView() {
-    if (!outputView) return;
-    if (!outputChunks.length) {
-      outputView.className = 'output-view empty';
-      outputView.textContent = 'Optimized text appears here...';
-      return;
-    }
-
-    if (outputRenderMode === 'plain') {
-      const outputText = assembleOutputText();
-      if (!outputText) {
-        outputView.className = 'output-view empty';
-        outputView.textContent = 'Completed chunks appear here as they finish...';
-        return;
+      // Build rich tooltip: flags + AI score + z-score
+      let tipParts = [];
+      if (s.flags.length) tipParts.push(s.flags.join(', '));
+      if (s.ai_score != null) tipParts.push(`AI: ${s.ai_score.toFixed(3)}`);
+      if (modelUseful && s.ai_z_score != null) {
+        tipParts.push(`z: ${s.ai_z_score.toFixed(2)}`);
+      } else if (!modelUseful && s.ai_score != null) {
+        tipParts.push('(low model discrimination)');
       }
-      outputView.className = 'output-view plain';
-      outputView.textContent = outputText;
-      return;
-    }
+      const tooltip = tipParts.length ? ` title="${escAttr(tipParts.join('  |  '))}"` : '';
 
-    outputView.className = 'output-view';
-    outputView.innerHTML = '';
-    outputChunks.forEach(chunk => outputView.appendChild(_buildChunkEl(chunk)));
-  }
-
-  function toggleOutputChunk(idx, mode) {
-    const chunk = outputChunks.find(item => item.chunk_idx === idx);
-    if (!chunk) return;
-    chunk.mode = mode === 'original' ? 'original' : 'output';
-    renderOutputView();
-  }
-
-  function assembleOutputText() {
-    const complete = outputChunks.filter(c => c.is_complete);
-    if (!complete.length) return '';
-
-    // Group by para_idx to restore original paragraph boundaries.
-    // Chunks from the same paragraph are joined with a space;
-    // different paragraphs are separated with a blank line.
-    const paraGroups = {};
-    complete.forEach(chunk => {
-      const pidx = chunk.para_idx ?? chunk.chunk_idx;
-      let text;
-      if (chunk.mode === 'original') {
-        text = chunk.original_text;
-      } else if (chunk.reverted_to_original && chunk.best_gated) {
-        text = chunk.best_gated.text;
+      if (hlClass) {
+        html += `<span class="${hlClass}"${tooltip}>${escHtml(s.text)}</span>`;
       } else {
-        text = chunk.output_text;
-      }
-      if (!paraGroups[pidx]) paraGroups[pidx] = [];
-      paraGroups[pidx].push(text);
-    });
-
-    return Object.keys(paraGroups)
-      .map(Number)
-      .sort((a, b) => a - b)
-      .map(pidx => paraGroups[pidx].join(' '))
-      .join('\n\n')
-      .trim();
-  }
-
-  function syncOutputViewButtons() {
-    if (viewChunkBtn) viewChunkBtn.classList.toggle('active', outputRenderMode === 'chunk');
-    if (viewPlainBtn) viewPlainBtn.classList.toggle('active', outputRenderMode === 'plain');
-  }
-
-  /* ── UI helpers ────────────────────────────────────────────────────────── */
-
-  function setRunning(val) {
-    running = val;
-    runBtn.disabled    = val;
-    runBtn.textContent = val ? 'Optimizing…' : 'Optimize';
-    const ob  = $('overall-bar');
-    const opr = ob && ob.parentElement;
-    if (ob) {
-      ob.classList.toggle('running', val);
-      if (val) {
-        ob.style.width = '0%';
-        overallVisualPct = 0;
+        html += escHtml(s.text);
       }
     }
-    if (opr) opr.classList.toggle('running', val);
-    if (val) {
-      startLiveUiLoop();
-      wsDot.className     = 'ws-dot running';
-      wsLabel.textContent = 'Running…';
+    analysisText.innerHTML = html;
+  }
+
+  function renderOutput() {
+    if (!finalOutput) return;
+
+    if (unfixedTexts.length > 0) {
+      // Highlight unfixed sentences within the full output text
+      let raw = finalOutput;
+      let segments = [];  // [{text, unfixed}]
+      // Sort by length descending to match longer sentences first
+      const sorted = [...unfixedTexts].sort((a, b) => b.length - a.length);
+
+      // Mark positions of unfixed sentences
+      let marks = [];  // [{start, end}]
+      for (const ut of sorted) {
+        const idx = raw.indexOf(ut);
+        if (idx >= 0) {
+          marks.push({ start: idx, end: idx + ut.length });
+        }
+      }
+      marks.sort((a, b) => a.start - b.start);
+
+      // Build segments
+      let cursor = 0;
+      for (const m of marks) {
+        if (m.start > cursor) {
+          segments.push({ text: raw.slice(cursor, m.start), unfixed: false });
+        }
+        segments.push({ text: raw.slice(m.start, m.end), unfixed: true });
+        cursor = m.end;
+      }
+      if (cursor < raw.length) {
+        segments.push({ text: raw.slice(cursor), unfixed: false });
+      }
+
+      let html = '';
+      for (const seg of segments) {
+        const escaped = escHtml(seg.text).replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
+        if (seg.unfixed) {
+          html += `<span class="hl-unfixed">${escaped}<span class="unfixed-tag">⚠ review</span></span>`;
+        } else {
+          html += escaped;
+        }
+      }
+      outputText.innerHTML = html;
     } else {
-      stopLiveUiLoop();
-      const connected = ws && ws.readyState === WebSocket.OPEN;
-      wsDot.className     = connected ? 'ws-dot connected' : 'ws-dot';
-      wsLabel.textContent = connected ? 'Connected'        : 'Disconnected';
+      outputText.innerHTML = escHtml(finalOutput).replace(/\n\n/g, '<br><br>').replace(/\n/g, '<br>');
     }
   }
 
-  function fmtPct(v) { return (v * 100).toFixed(1) + '%'; }
-
-  function timeStamp() {
-    return new Date().toLocaleTimeString([], {
-      hour12:  false,
-      hour:    '2-digit',
-      minute:  '2-digit',
-      second:  '2-digit',
-    });
+  function getHighlightClass(severity) {
+    switch (severity) {
+      case 'critical': return 'hl-critical';
+      case 'high':     return 'hl-high';
+      case 'medium':   return 'hl-medium';
+      default:         return '';
+    }
   }
 
   function escHtml(s) {
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
   }
 
-  /* ── Boot ──────────────────────────────────────────────────────────────── */
-  window.__optimizerDebug = {
-    dispatchTestMessage(message) {
-      dispatch(message);
-    },
-    getOutputChunks() {
-      return JSON.parse(JSON.stringify(outputChunks));
-    },
-    getOutputMode() {
-      return outputRenderMode;
-    },
-    getOutputHtml() {
-      return outputView ? outputView.innerHTML : '';
-    },
-  };
+  function escAttr(s) {
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
 
-  connect();
+  /* ── Actions ───────────────────────────────────────────────────────── */
+  function startRun() {
+    if (running) return;
+    const text = inputText.value.trim();
+    if (!text) return;
+
+    running = true;
+    runBtn.disabled = true;
+    runBtn.textContent = 'Running...';
+
+    // Reset
+    sentences = [];
+    unfixedSet = new Set();
+    unfixedTexts = [];
+    finalOutput = '';
+    s4Stats = { rewritten: 0, deleted: 0, unfixed: 0 };
+    globalAiScore = null;
+    globalViolCount = 0;
+    modelUseful = true;
+    metricsRow.style.display = 'none';
+    analysisText.innerHTML = '<span class="placeholder-msg">Analyzing...</span>';
+    outputText.innerHTML = '<span class="placeholder-msg">Waiting for pipeline to complete...</span>';
+    // Remove old score badge
+    const oldBadge = document.querySelector('.analysis-score-badge');
+    if (oldBadge) oldBadge.remove();
+
+    initStages();
+
+    fetch('/api/optimize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, chunk_mode: chunkMode }),
+    }).catch(() => {
+      running = false;
+      runBtn.disabled = false;
+      runBtn.textContent = 'Optimize';
+    });
+  }
+
+  /* ── Mode toggle ───────────────────────────────────────────────────── */
+  modeShortBtn.addEventListener('click', () => {
+    chunkMode = 'short';
+    modeShortBtn.classList.add('active');
+    modeLongBtn.classList.remove('active');
+  });
+  modeLongBtn.addEventListener('click', () => {
+    chunkMode = 'long';
+    modeLongBtn.classList.add('active');
+    modeShortBtn.classList.remove('active');
+  });
+
+  runBtn.addEventListener('click', startRun);
+
+  copyBtn.addEventListener('click', () => {
+    if (finalOutput) {
+      navigator.clipboard.writeText(finalOutput);
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+    }
+  });
+
+  /* ── Health info ───────────────────────────────────────────────────── */
+  fetch('/api/health').then(r => r.json()).then(d => {
+    deviceLabel.textContent = d.device || '—';
+    rewriteLabel.textContent = d.rewrite_model || '—';
+  }).catch(() => {});
+
+  /* ── Boot ──────────────────────────────────────────────────────────── */
+  initStages();
+  connectWS();
 
 })();
