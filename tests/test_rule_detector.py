@@ -597,6 +597,6 @@ class TestNoSpacyDependency:
             mod = importlib.import_module("scripts.rule_detector")
 
         # Check that spacy is not in the loaded modules after importing rule_detector
-        source = Path(mod.__file__).read_text()
+        source = Path(mod.__file__).read_text(encoding="utf-8")
         assert "import spacy" not in source
         assert "from spacy" not in source
