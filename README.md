@@ -63,7 +63,24 @@ Trileaf uses the rewrite model itself to classify the input into one of five gen
 | **Narrative** | Fiction, blogs, personal essays, stories | Cut adjectives, add brand names, sentence fragments, dead time, narrator voice |
 | **Persuasive** | Op-eds, reviews, arguments, commentary | State positions directly, emotional spikes, dismiss weak counterarguments |
 
-A universal rule set applies to all genres (sentence rhythm variation, no dashes, specificity over generality, technique rotation). Genre supplements add genre-specific guidance on top.
+A universal rule set of 12 rules applies to all genres (sentence rhythm variation, no dashes, no synonym cycling, no false ranges, no formulaic challenge sections, specificity over generality, technique rotation). Genre supplements add genre-specific guidance on top.
+
+### Rule-based AI pattern detection
+
+The rule detector runs 25 deterministic checks (regex + word lists, no ML) across eight categories:
+
+| Category | Rules | Examples |
+|----------|-------|---------|
+| **A. Punctuation** | em dash, semicolon, colon overuse | `—`, `;`, mid-sentence `:` |
+| **B. Structure** | not-X-but-Y, triple parallel, abstract noun stack, tailing negation | "not only...but also", "X, Y, and Z" triplets |
+| **C. Vocabulary** | high-risk transitions, cliche phrases, AI filler words | "However,", "delve", "it is important to note" |
+| **D. Syntax** | uniform sentence rhythm, passive voice stacking | 3+ consecutive sentences with similar word count |
+| **E. Human deficit** | missing colloquial markers, short sentences, questions | absence of "actually", "just", "pretty much" |
+| **F. Content inflation** | significance inflation, promotional language, superficial -ing | "pivotal moment", "vibrant", "highlighting the..." |
+| **G. AI artifacts** | chatbot artifacts, knowledge-cutoff disclaimers | "I hope this helps!", "based on available information" |
+| **H. Style tells** | copula avoidance, generic conclusions, persuasive tropes, signposting | "serves as", "the future looks bright", "let's dive in" |
+
+Rules in categories F, G, and H are derived from [Wikipedia's "Signs of AI writing"](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) guide, adapted from the [blader/humanizer](https://github.com/blader/humanizer) project.
 
 ### Multi-candidate selection (Stage 3)
 
@@ -226,16 +243,17 @@ Trileaf/
 │
 ├── scripts/
 │   ├── orchestrator_v2.py             # Six-stage pipeline orchestrator
-│   ├── rule_detector.py               # Rule-based AI pattern detection (13 rules)
+│   ├── rule_detector.py               # Rule-based AI pattern detection (25 rules)
 │   ├── detector_interface.py          # Pluggable AI detection model abstraction
 │   ├── prompt_builder.py              # Genre-aware prompt construction
-│   ├── post_processor.py              # Deterministic punctuation/whitespace fixes
+│   ├── post_processor.py              # Deterministic post-processing (punctuation, quotes, emoji, bold, headings)
 │   ├── chunker.py                     # Text cleaning + sentence splitting
 │   ├── models_runtime.py              # Model loading, inference, LLM API calls
 │   ├── rewrite_config.py              # Credential resolution (LeafHub / env)
 │   ├── app_config.py                  # Config (~/.trileaf/config.json)
 │   ├── check_env.py                   # Health check (trileaf doctor)
 │   ├── eval_pipeline.py               # 10-scenario evaluation script
+│   ├── eval_new_rules.py              # 5-scenario evaluation for extended rule set
 │   └── download_scripts/              # HuggingFace model downloaders
 │
 ├── tests/                             # pytest test suite (266 tests)
@@ -250,3 +268,4 @@ Trileaf/
 - [`desklib/ai-text-detector-v1.01`](https://huggingface.co/desklib/ai-text-detector-v1.01) — AI-probability scorer
 - [`sentence-transformers/paraphrase-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-mpnet-base-v2) — semantic similarity scorer
 - [**LeafHub**](https://github.com/Rebas9512/Leafhub) — local encrypted API key vault, required for credential management
+- [**blader/humanizer**](https://github.com/blader/humanizer) — AI writing pattern catalog (Wikipedia's "Signs of AI writing"), adapted for rule detection and prompt guidance

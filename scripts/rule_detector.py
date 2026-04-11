@@ -8,10 +8,13 @@ and 4 all depend on it.
 Rule categories
 ───────────────
 A. Punctuation     — em dash, semicolon, colon overuse
-B. Structure       — not-X-but-Y, triple parallel, abstract noun stack
+B. Structure       — not-X-but-Y, triple parallel, abstract noun stack, tailing negation
 C. Vocabulary      — high-risk transitions, cliche phrases, AI filler words
 D. Syntax          — uniform sentence rhythm, passive voice stacking
 E. Human deficit   — missing colloquial markers, short sentences, questions
+F. Content inflate — significance inflation, promotional language, superficial -ing
+G. AI artifacts    — chatbot artifacts, knowledge-cutoff disclaimers, sycophantic tone
+H. Style tells     — copula avoidance, generic conclusions, persuasive tropes, signposting
 """
 
 from __future__ import annotations
@@ -117,13 +120,18 @@ _CLICHE_PHRASES = [
     "constructed metric", "empirical foundation",
     "a nuanced approach", "at its core",
     "navigate the complexities of", "navigate the complexities",
+    "in order to", "due to the fact that",
+    "at this point in time", "has the ability to",
+    "in the event that",
 ]
 
 _AI_FILLER_WORDS = [
     "delve into", "delve", "nuanced", "multifaceted", "pivotal",
     "comprehensive", "notably", "it is worth noting",
     "it is important to", "in today's world", "in conclusion",
-    "it's crucial",
+    "it's crucial", "enduring", "garner", "interplay",
+    "intricate", "intricacies", "tapestry", "align with",
+    "enhance",
 ]
 
 # ── E-class: Human deficit ──────────────────────────────────────────────────
@@ -133,6 +141,78 @@ _COLLOQUIAL_MARKERS = [
     "really", "a whole lot", "at least", "honestly", "to be fair",
     "sure", "though", "well",
 ]
+
+# ── F-class: Content inflation ─────────────────────────────────────────
+
+_SIGNIFICANCE_INFLATION = [
+    "stands as a testament", "serves as a testament", "is a testament",
+    "pivotal moment", "pivotal role", "crucial role", "vital role",
+    "key turning point", "indelible mark", "deeply rooted",
+    "setting the stage for", "marking a pivotal", "shaping the future",
+    "reflects broader", "evolving landscape", "focal point",
+    "underscores its importance", "highlights its significance",
+    "symbolizing its ongoing", "symbolizing its enduring",
+    "represents a shift", "marks a shift",
+]
+
+_PROMOTIONAL_LANGUAGE = [
+    "vibrant", "nestled", "breathtaking", "groundbreaking",
+    "renowned", "must-visit", "stunning", "in the heart of",
+    "natural beauty", "rich cultural heritage",
+    "commitment to excellence", "exemplifies",
+]
+
+_RE_SUPERFICIAL_ING = re.compile(
+    r",\s*(?:highlighting|underscoring|emphasizing|ensuring|reflecting"
+    r"|symbolizing|contributing to|cultivating|fostering|encompassing"
+    r"|showcasing)\b",
+    re.IGNORECASE,
+)
+
+# ── G-class: AI communication artifacts ────────────────────────────────
+
+_CHATBOT_ARTIFACTS = [
+    "i hope this helps", "let me know if you", "let me know if there",
+    "great question", "certainly!", "of course!",
+    "you're absolutely right", "that's an excellent point",
+    "would you like me to", "feel free to", "don't hesitate to",
+]
+
+_KNOWLEDGE_CUTOFF = [
+    "as of my last", "up to my last training",
+    "while specific details are limited",
+    "while specific details are scarce",
+    "based on available information",
+    "as of my knowledge cutoff",
+]
+
+# ── H-class: Style tells ──────────────────────────────────────────────
+
+_COPULA_AVOIDANCE = [
+    "serves as", "stands as", "functions as",
+    "represents a", "boasts a", "features a", "offers a",
+]
+
+_GENERIC_CONCLUSIONS = [
+    "the future looks bright", "exciting times lie ahead",
+    "journey toward excellence", "step in the right direction",
+    "continues to thrive", "paving the way for",
+]
+
+_PERSUASIVE_TROPES = [
+    "the real question is", "what really matters",
+    "the heart of the matter", "the deeper issue",
+]
+
+_SIGNPOSTING = [
+    "let's dive in", "let's explore", "let's break this down",
+    "here's what you need to know", "now let's look at",
+    "without further ado", "let's take a closer look",
+]
+
+_RE_TAILING_NEGATION = re.compile(
+    r",\s+no\s+\w+(?:\s+\w+){0,2}[.!?]\s*$",
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Sentence splitting
@@ -384,6 +464,176 @@ def _check_human_no_question(text: str) -> List[Violation]:
     )]
 
 
+# ── F-class: Content inflation (sentence-level) ──────────────────────────
+
+def _check_content_significance(text: str) -> List[Violation]:
+    """Flag significance inflation phrases."""
+    violations = []
+    text_lower = text.lower()
+    for phrase in _SIGNIFICANCE_INFLATION:
+        pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+        for m in pattern.finditer(text):
+            violations.append(Violation(
+                rule_id="content.significance_inflation",
+                severity="high",
+                span=(m.start(), m.end()),
+                context=text[max(0, m.start() - 10):m.end() + 10],
+                suggestion=f"Remove inflated significance claim '{phrase}'; state the fact directly",
+            ))
+    return violations
+
+
+def _check_content_promotional(text: str) -> List[Violation]:
+    """Flag promotional / advertisement-like language."""
+    violations = []
+    for word in _PROMOTIONAL_LANGUAGE:
+        pattern = re.compile(r"\b" + re.escape(word) + r"\b", re.IGNORECASE)
+        for m in pattern.finditer(text):
+            violations.append(Violation(
+                rule_id="content.promotional",
+                severity="medium",
+                span=(m.start(), m.end()),
+                context=text[max(0, m.start() - 10):m.end() + 10],
+                suggestion=f"Replace promotional term '{word}' with neutral, specific language",
+            ))
+    return violations
+
+
+def _check_content_superficial_ing(text: str) -> List[Violation]:
+    """Flag superficial -ing participle phrases tacked onto sentences."""
+    violations = []
+    for m in _RE_SUPERFICIAL_ING.finditer(text):
+        violations.append(Violation(
+            rule_id="content.superficial_ing",
+            severity="high",
+            span=(m.start(), m.end()),
+            context=text[max(0, m.start() - 10):m.end() + 10],
+            suggestion="Remove trailing -ing clause; make it a separate sentence or delete",
+        ))
+    return violations
+
+
+# ── G-class: AI communication artifacts (sentence-level) ─────────────────
+
+def _check_artifact_chatbot(text: str) -> List[Violation]:
+    """Flag chatbot communication artifacts and sycophantic tone."""
+    violations = []
+    text_lower = text.lower()
+    for phrase in _CHATBOT_ARTIFACTS:
+        if phrase in text_lower:
+            idx = text_lower.index(phrase)
+            violations.append(Violation(
+                rule_id="artifact.chatbot",
+                severity="critical",
+                span=(idx, idx + len(phrase)),
+                context=text[max(0, idx - 5):idx + len(phrase) + 5],
+                suggestion=f"Remove chatbot artifact '{phrase}'",
+            ))
+    return violations
+
+
+def _check_artifact_cutoff(text: str) -> List[Violation]:
+    """Flag knowledge-cutoff disclaimers left in text."""
+    violations = []
+    text_lower = text.lower()
+    for phrase in _KNOWLEDGE_CUTOFF:
+        if phrase in text_lower:
+            idx = text_lower.index(phrase)
+            violations.append(Violation(
+                rule_id="artifact.knowledge_cutoff",
+                severity="critical",
+                span=(idx, idx + len(phrase)),
+                context=text[max(0, idx - 5):idx + len(phrase) + 5],
+                suggestion=f"Remove knowledge-cutoff disclaimer '{phrase}'",
+            ))
+    return violations
+
+
+# ── H-class: Style tells (sentence-level) ────────────────────────────────
+
+def _check_style_copula_avoidance(text: str) -> List[Violation]:
+    """Flag 'serves as' / 'stands as' patterns that avoid simple is/are/has."""
+    violations = []
+    for phrase in _COPULA_AVOIDANCE:
+        pattern = re.compile(r"\b" + re.escape(phrase) + r"\b", re.IGNORECASE)
+        for m in pattern.finditer(text):
+            violations.append(Violation(
+                rule_id="style.copula_avoidance",
+                severity="medium",
+                span=(m.start(), m.end()),
+                context=text[max(0, m.start() - 10):m.end() + 10],
+                suggestion=f"Replace '{phrase}' with 'is', 'are', or 'has'",
+            ))
+    return violations
+
+
+def _check_style_generic_conclusion(text: str) -> List[Violation]:
+    """Flag generic positive conclusions."""
+    violations = []
+    text_lower = text.lower()
+    for phrase in _GENERIC_CONCLUSIONS:
+        if phrase in text_lower:
+            idx = text_lower.index(phrase)
+            violations.append(Violation(
+                rule_id="style.generic_conclusion",
+                severity="medium",
+                span=(idx, idx + len(phrase)),
+                context=text[max(0, idx - 5):idx + len(phrase) + 5],
+                suggestion=f"Replace generic conclusion '{phrase}' with a specific fact or plan",
+            ))
+    return violations
+
+
+def _check_style_persuasive_trope(text: str) -> List[Violation]:
+    """Flag persuasive authority tropes."""
+    violations = []
+    text_lower = text.lower()
+    for phrase in _PERSUASIVE_TROPES:
+        if phrase in text_lower:
+            idx = text_lower.index(phrase)
+            violations.append(Violation(
+                rule_id="style.persuasive_trope",
+                severity="medium",
+                span=(idx, idx + len(phrase)),
+                context=text[max(0, idx - 5):idx + len(phrase) + 5],
+                suggestion=f"Remove rhetorical frame '{phrase}'; state the point directly",
+            ))
+    return violations
+
+
+def _check_style_signposting(text: str) -> List[Violation]:
+    """Flag meta-commentary signposting phrases."""
+    violations = []
+    text_lower = text.lower()
+    for phrase in _SIGNPOSTING:
+        if phrase in text_lower:
+            idx = text_lower.index(phrase)
+            violations.append(Violation(
+                rule_id="style.signposting",
+                severity="medium",
+                span=(idx, idx + len(phrase)),
+                context=text[max(0, idx - 5):idx + len(phrase) + 5],
+                suggestion=f"Remove signposting '{phrase}'; start with the actual content",
+            ))
+    return violations
+
+
+# ── B-class extension: tailing negation ──────────────────────────────────
+
+def _check_struct_tailing_negation(text: str) -> List[Violation]:
+    """Flag clipped tailing-negation fragments like ', no guessing.'"""
+    violations = []
+    for m in _RE_TAILING_NEGATION.finditer(text):
+        violations.append(Violation(
+            rule_id="struct.tailing_negation",
+            severity="medium",
+            span=(m.start(), m.end()),
+            context=text[max(0, m.start() - 10):m.end()],
+            suggestion="Rewrite tailing negation as a full clause",
+        ))
+    return violations
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Severity grading
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -396,7 +646,7 @@ def compute_rule_severity(violations: List[Violation]) -> str:
     Compute severity from a list of violations.
 
     Logic:
-      - Any punct.em_dash → critical
+      - Any critical-severity violation → critical
       - ≥2 high-severity violations → critical
       - 1 high-severity violation → high
       - Any medium-severity violation → medium
@@ -406,8 +656,7 @@ def compute_rule_severity(violations: List[Violation]) -> str:
     if not violations:
         return "clean"
 
-    has_em_dash = any(v.rule_id == "punct.em_dash" for v in violations)
-    if has_em_dash:
+    if any(v.severity == "critical" for v in violations):
         return "critical"
 
     high_count = sum(1 for v in violations if v.severity == "high")
@@ -480,11 +729,27 @@ def analyze_sentence(sentence: str) -> SentenceAnalysis:
     violations.extend(_check_struct_not_x_but_y(sentence))
     violations.extend(_check_struct_triple_parallel(sentence))
     violations.extend(_check_struct_abstract_noun_stack(sentence))
+    violations.extend(_check_struct_tailing_negation(sentence))
 
     # C-class
     violations.extend(_check_vocab_high_risk_transition(sentence))
     violations.extend(_check_vocab_cliche_phrase(sentence))
     violations.extend(_check_vocab_ai_filler(sentence))
+
+    # F-class: content inflation
+    violations.extend(_check_content_significance(sentence))
+    violations.extend(_check_content_promotional(sentence))
+    violations.extend(_check_content_superficial_ing(sentence))
+
+    # G-class: AI artifacts
+    violations.extend(_check_artifact_chatbot(sentence))
+    violations.extend(_check_artifact_cutoff(sentence))
+
+    # H-class: style tells
+    violations.extend(_check_style_copula_avoidance(sentence))
+    violations.extend(_check_style_generic_conclusion(sentence))
+    violations.extend(_check_style_persuasive_trope(sentence))
+    violations.extend(_check_style_signposting(sentence))
 
     rule_sev = compute_rule_severity(violations)
 

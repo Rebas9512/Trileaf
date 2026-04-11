@@ -39,6 +39,35 @@ _RE_DASH = re.compile(r"\s*[—–]\s*")
 # Double-hyphen with spaces (not inside a word)
 _RE_DOUBLE_HYPHEN = re.compile(r"\s+--\s+")
 
+# Curly / smart quotes
+_RE_CURLY_DOUBLE = re.compile(r"[\u201c\u201d]")
+_RE_CURLY_SINGLE = re.compile(r"[\u2018\u2019]")
+
+# Emoji ranges
+_RE_EMOJI = re.compile(
+    r"["
+    r"\U0001F600-\U0001F64F"   # emoticons
+    r"\U0001F300-\U0001F5FF"   # symbols & pictographs
+    r"\U0001F680-\U0001F6FF"   # transport & map
+    r"\U0001F900-\U0001F9FF"   # misc symbols
+    r"\U0001FA00-\U0001FA6F"   # chess/extended-A
+    r"\U0001FA70-\U0001FAFF"   # extended-B
+    r"\u2702-\u27B0"           # dingbats
+    r"\uFE00-\uFE0F"          # variation selectors
+    r"]+",
+)
+
+# Markdown bold pattern **...**
+_RE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+
+# Inline header list: - **Header:** content
+_RE_INLINE_HEADER_LIST = re.compile(
+    r"^(\s*[-*]\s+)\*\*([^*:]+):?\*\*:?\s*", re.MULTILINE,
+)
+
+# Markdown heading line
+_RE_HEADING = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+
 
 def fix_punctuation(text: str) -> str:
     """
@@ -85,6 +114,98 @@ def fix_whitespace(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Curly-quote fix
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fix_curly_quotes(text: str) -> str:
+    """Replace curly/smart quotation marks with straight ASCII equivalents."""
+    text = _RE_CURLY_DOUBLE.sub('"', text)
+    text = _RE_CURLY_SINGLE.sub("'", text)
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Emoji removal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fix_emojis(text: str) -> str:
+    """Remove emoji characters and clean up leftover double-spaces."""
+    text = _RE_EMOJI.sub("", text)
+    # Collapse double spaces left behind
+    text = re.sub(r"  +", " ", text)
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Excessive bold removal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fix_excessive_bold(text: str) -> str:
+    """Strip ALL bold markers if 4 or more **...** patterns are present."""
+    if len(_RE_BOLD.findall(text)) >= 4:
+        text = _RE_BOLD.sub(r"\1", text)
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Inline header list cleanup
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fix_inline_header_lists(text: str) -> str:
+    """Convert '- **Header:** content' to '- Header content'."""
+    text = _RE_INLINE_HEADER_LIST.sub(r"\1\2 ", text)
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Title-case heading fix
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fix_title_case_headings(text: str) -> str:
+    """Convert title-case markdown headings to sentence case."""
+
+    def _to_sentence_case(m: re.Match) -> str:
+        hashes = m.group(1)
+        heading_text = m.group(2)
+        words = heading_text.split()
+        if not words:
+            return m.group(0)
+
+        # Determine if this heading is title-cased (>=60% of eligible words capitalized)
+        eligible = []
+        for i, w in enumerate(words):
+            if i == 0:
+                continue  # skip first word
+            if len(w) <= 3:
+                continue  # skip short words
+            if w.isupper():
+                continue  # skip acronyms like "API"
+            eligible.append(w)
+
+        if not eligible:
+            return m.group(0)
+
+        capitalized = sum(1 for w in eligible if w[0].isupper())
+        ratio = capitalized / len(eligible)
+        if ratio < 0.6:
+            return m.group(0)
+
+        # Convert to sentence case
+        new_words = []
+        for i, w in enumerate(words):
+            if i == 0:
+                new_words.append(w)  # keep first word as-is
+            elif w.isupper():
+                new_words.append(w)  # keep acronyms
+            else:
+                new_words.append(w.lower())
+        return f"{hashes} {' '.join(new_words)}"
+
+    text = _RE_HEADING.sub(_to_sentence_case, text)
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Combined post-process
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -105,6 +226,31 @@ def run_post_process(text: str) -> Tuple[str, List[str]]:
     text = fix_whitespace(text)
     if text != prev:
         log.append("Normalized whitespace")
+
+    prev = text
+    text = fix_curly_quotes(text)
+    if text != prev:
+        log.append("Replaced curly/smart quotes with straight quotes")
+
+    prev = text
+    text = fix_emojis(text)
+    if text != prev:
+        log.append("Removed emoji characters")
+
+    prev = text
+    text = fix_excessive_bold(text)
+    if text != prev:
+        log.append("Stripped excessive bold markdown (4+ instances)")
+
+    prev = text
+    text = fix_inline_header_lists(text)
+    if text != prev:
+        log.append("Cleaned up inline header list formatting")
+
+    prev = text
+    text = fix_title_case_headings(text)
+    if text != prev:
+        log.append("Converted title-case headings to sentence case")
 
     return text, log
 

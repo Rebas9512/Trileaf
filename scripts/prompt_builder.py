@@ -92,7 +92,12 @@ These rules apply regardless of genre:
 4. SPECIFICITY OVER GENERALITY: Replace vague claims with concrete details, numbers, names, dates. Specificity is nearly impossible for AI to fake convincingly.
 5. IMPERFECTION IS HUMAN: Leave some roughness. A slightly awkward transition, a sentence that runs a bit long, an opinion stated too strongly. AI text is suspiciously smooth.
 6. TECHNIQUE ROTATION: Any single technique used 3+ times in one piece becomes a new detectable pattern. Rotate between different humanization methods.
-7. PRESERVE FACTS: All facts, numbers, named entities, and core claims must remain exactly as-is. Do not invent or remove information.\
+7. PRESERVE FACTS: All facts, numbers, named entities, and core claims must remain exactly as-is. Do not invent or remove information.
+8. NO SYNONYM CYCLING: Don't use different words for the same thing in consecutive sentences ("the protagonist / the main character / the central figure / the hero"). Pick one term and stick with it. AI rotates synonyms because of repetition penalties; humans repeat naturally.
+9. NO FALSE RANGES: Don't use "from X to Y" constructions where X and Y aren't on a meaningful scale. "From the Big Bang to dark matter" is not a real range. Just list the topics.
+10. NO FORMULAIC CHALLENGE SECTIONS: Never write "Despite challenges... continues to thrive" or "faces several challenges typical of..." followed by optimistic pivot. State specific problems with specific details.
+11. NO EXCESSIVE HEDGING: Don't stack qualifiers ("it could potentially possibly be argued that... might have some effect"). One hedge per claim maximum. If unsure, say so once clearly.
+12. NO FRAGMENTED HEADERS: Don't follow a heading with a one-sentence restatement of the heading. Start with the actual content immediately after the heading.\
 """
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -109,7 +114,10 @@ ACADEMIC writing AI tells and fixes:
 - End sections with questions or implications, not summaries. "What remains unclear is..." beats "Thus, we can see that..."
 - Vary paragraph length aggressively. A 1-sentence insight paragraph followed by a dense 6-sentence evidence paragraph.
 - Hedging should be strategic, not reflexive. Remove "it could be argued" and "one might suggest" unless genuinely uncertain.
-- Add one specific data reference per major claim (a year, a study name, a figure).\
+- Add one specific data reference per major claim (a year, a study name, a figure).
+- Replace vague attributions ("Experts argue", "Industry reports suggest") with specific sources: name the researcher, cite the year, reference the institution. Generic authority claims are a strong AI tell.
+- Don't pile on notability claims by listing media outlets without context. Instead of "cited in NYT, BBC, and The Hindu," write "In a 2024 NYT piece, she argued X." One specific reference beats three name-drops.
+- Hedging calibration: strategic hedging is fine in academic writing ("the evidence suggests", "this may indicate"), but don't stack hedges in the same sentence. One qualifier per claim. Remove reflexive hedges like "it could be argued" and "one might suggest" unless genuinely uncertain.\
 """,
 
     "narrative": """\
@@ -137,7 +145,8 @@ PROFESSIONAL writing AI tells and fixes:
 - Let bullet points be structurally inconsistent. One starts with a verb, another with a noun, another with a date. Real resumes are assembled over time.
 - Front-load the point. Put the request or key finding in the first sentence, then context. AI builds up; humans get to it.
 - Include one honest limitation or qualifier. "I don't have direct K8s experience, but I picked up Docker in three weeks." AI is relentlessly positive.
-- Replace HR-speak: "leverage" → "use," "utilize" → "use," "passionate about" → specific thing you did, "spearheaded" → "led" or "started."\
+- Replace HR-speak: "leverage" → "use," "utilize" → "use," "passionate about" → specific thing you did, "spearheaded" → "led" or "started."
+- Don't emphasize notability with generic media mentions ("featured in Forbes, TechCrunch, and Wired"). Either cite a specific article with a specific claim, or cut the namedropping entirely.\
 """,
 
     "casual": """\
@@ -164,7 +173,8 @@ PERSUASIVE writing AI tells and fixes:
 - Write one risky sentence: a prediction, a named example, something that could be wrong. AI never takes reputational risk.
 - Vary engagement depth with counterarguments. 3 sentences on the strongest objection, half a sentence on weak ones.
 - End with escalation, not summary. Last paragraph should be the strongest statement, not a recap. AI cannot resist summarizing.
-- Break the "reasonable person" persona once. Admit a bias, acknowledge inconsistency, be deliberately unfair to a bad argument.\
+- Break the "reasonable person" persona once. Admit a bias, acknowledge inconsistency, be deliberately unfair to a bad argument.
+- Replace vague attributions ("Experts agree", "Studies show") with named sources. "A 2023 Stanford study found..." beats "Research suggests..." every time. Unnamed experts are an AI hallmark.\
 """,
 }
 
