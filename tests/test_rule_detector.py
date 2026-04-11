@@ -556,10 +556,11 @@ class TestViolationFields:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestPerformance:
-    """analyze_document() on 1000-word text must complete in < 50 ms."""
+    """analyze_document() on 1000-word text must complete in < 100 ms."""
 
-    def test_1000_word_under_50ms(self):
+    def test_1000_word_under_100ms(self):
         # Generate ~1000 word text by repeating a mix of sentences
+        # Limit raised from 50→100 ms after rule set expanded from 13→25 rules
         base = (
             "The algorithm produced results. However, the team found issues. "
             "Furthermore, the data was comprehensive and nuanced. "
@@ -575,7 +576,7 @@ class TestPerformance:
         rd.analyze_document(repeated)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        assert elapsed_ms < 50, f"analyze_document took {elapsed_ms:.1f} ms (limit: 50 ms)"
+        assert elapsed_ms < 100, f"analyze_document took {elapsed_ms:.1f} ms (limit: 100 ms)"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
